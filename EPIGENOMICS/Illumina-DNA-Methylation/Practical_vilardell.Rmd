@@ -1,0 +1,826 @@
+---
+title: "EPIGENOMICS PRACTICAL EXERCISE"
+subtitle: "DNA Methylation Report"
+author: "Marina Vilardell"
+date: "2023-03-14"
+output:
+  html_document:
+    highlight: haddock
+    number_sections: yes
+    theme: readable
+    toc: yes
+    toc_depth: 2
+    toc_float: no
+    
+---
+<style type="text/css">
+
+body{ /* Normal  */
+      font-size: 18px;
+      color: Black;
+      font-family: Calibri, Helvetica, sans-serif;
+      text-align: justify;
+  }
+
+td {  /* Table  */
+  font-size: 18px;
+}
+h1.title {
+  font-size: 40px;
+  color: DarkRed;
+}
+h1 { /* Header 1 */
+  font-size: 30px;
+  color: DarkRed;
+}
+h2 { /* Header 2 */
+    font-size: 24px;
+  color: DarkRed;
+}
+
+code.r{ /* Code block */
+    font-size: 16px;
+}
+
+</style>
+
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# Introduction
+The goal of this practical is to analyse a data set that contains information about Crohn's disease, an autoimmune disease which affects colon and intestine. In the data there are patients and healthy controls coming from adipose cells with an EPIC array. 
+
+We will see how to read input raw data (iDAT files), how to perform the quality control to identify those samples and probes that are considered to be removed, sex prediction, normalization of the data and removal of some CpG sites, identify the differentially methylated CpG positions between crohn's disease and healthy samples, and finally to perform an enrichment analysis to identify which biological pathways are over represented in the differentially methylated CpGs.
+
+
+## Libraries
+These are the libraries needed for the properly analysis of methylation.
+```{r,warning=FALSE,message=FALSE}
+# ------------ Libraries ------------
+library(minfi)
+library(IlluminaHumanMethylationEPICanno.ilm10b4.hg19)
+library(DMRcate)
+library(FactoMineR)
+```
+
+
+
+## EPIC array
+
+The infinium methylation EPIC array, produced by Illumina, gives information for over 850.000 CpG islands throughout the human genome. Each sample will be measured in a single array, and in tho different color channels, green and red.
+
+There are two types of probes used in this array: Type I and type II probes, and for each CpG we will have two measurements: methylated intensity and unmethylated intensity. Using this values, the methylation level of each CpG can be calculated, which is reported as the Beta-values (ratio of methylated probe intensity versus the overall intensity).  The difference between the type of probes is that the type I probe require two beads for each locus, and type II only requires one bead per locus, as it is seen in the following figure.
+
+![Type I and type II probes.](C:/Users/MARINA/Documents/MASTER/EPIGENOMICS/Ilumina_data_analysis/image.jpg)
+
+Previously in the laboratory, genomic DNA samples are treated with a bisulfite treatment, used to identify and quantify the methylated cytosines in the DNA. If the cytosine is methylated, it will remain cytosine, but if the cytosine is not methylated, then it will change to uracil. When amplifying, the uracils will be transformed to thymine, and for sure the cytosines we get will be methylated. Then, it will be fragmented, hybridized and finally scanned. 
+
+To measure the methylation levels, we will get the beta values which range between 0 and 1. As we are not analyzing single-cell methylation, the beta values will be an average of the methylated base for that probe, for all the cells found in the sample. A value of 0 indicates that all the copies of the CpG site of all the cells in the sample were unmethylated, whereas a value of 1 inficates that all the cells have the specific CpG site methylated. In the reality, it is uncommon to find those extreme values, due to the technical noise and other type of variations, so the beta-values commonly lie between 0.1-0.9 range. 
+
+M-values are also another metric to measure methylation levels (which will be used in this practical), and they are the log2 ratio of the methylated probe versus the unmethylated.
+
+
+# Reading data
+
+Methylation data is stored in IDAT files. To import this data in R, we will use some functions of the **minfi** package. First of all, we specify the path to the IDAT files and a sample sheet, which contains some information regarding each of the samples used in this experiment. 
+
+```{r,message=FALSE, warning=FALSE}
+# ----- set working directory and path to folder ----
+setwd("C:/Users/MARINA/Documents/MASTER/EPIGENOMICS/Ilumina_data_analysis/Practical")
+idat.folder <- "/Users/MARINA/Documents/MASTER/EPIGENOMICS/Ilumina_data_analysis/Practical"
+
+# --- read the sample sheet ---
+targets <- read.metharray.sheet(base=idat.folder)
+targets
+
+```
+
+The data set contains 13 samples. 7 correspond to Crohn's Disease patients and 6 to healthy patients.
+
+Once this is done, we now can read the raw intensity data using the function *read.methylation.exp()*, which will create a RGChannel object.
+
+```{r, message=FALSE}
+# ---- loading data ----
+rgset <- read.metharray.exp(targets = targets,verbose = T)
+rgset # EPIC array
+
+colnames(rgset)
+
+#Change the name of the samples, to easly identify them. To do this, remove from _2011 to the end. 
+#CD are Crohn's disease samples and N are healthy samples.
+colnames(rgset)<-sub("_2011.*", "", colnames(rgset))
+```
+
+rgset is a RGChannelSet object where we have the RAW DATA. This is the initial object of a minfi analysis that contains the raw intensities in the green and red channels, and also intensities of the internal control probes. As the data is read from a data sheet, the phenotype data is also stored in the rgset object and can be accessed with the command *pdata()*.
+
+```{r,message=FALSE}
+# --- Data exploration ----
+# Extract phenodata
+phenoData <- pData(rgset)
+#The RGChannelSet stores also a manifest object that contains the probe design information of the array:
+
+manifest <- getManifest(rgset)
+manifest #EPIC array and type of probes
+
+```
+ 
+- Total number of initial probes: 866836 
+
+- Number of initial samples: 13
+
+```{r}
+####Probes information
+getProbeInfo(manifest, type = "I")
+getProbeInfo(manifest, type = "II")
+```
+
+With this previous function, we can get information about the two different probe types. The type I probe, has one probe for the methylated (ProbeSeqA) and a probe for the unmethylated (ProbeSeqB). It also gives information regarding the number of CpG islands found in each probe.
+In type II probes, as there is a single probe capable of getting the signal of methylated and unmethylated, there is only a DNA string set (ProbSeqA) per each probe.
+
+
+# Classes
+
+The next figure represents a visual diagram of all the steps and object classes to finally get the genomicRatioSet object. 
+
+![Classes diagram.](C:/Users/MARINA/Documents/MASTER/EPIGENOMICS/Ilumina_data_analysis/image2.jpg)
+
+## MethylSet and RatioSet objects
+
+We have previously created the RGChannelSet object from the idats files, and now we have to convert it to a MethylSet object, that will only contain the methylated and unmethylated signals. 
+
+```{r,message=FALSE}
+MSet <- preprocessRaw(rgset)
+MSet
+```
+
+This function matches up the different probes and color channels. It is important to note that the dimension of this object consists of 866838 probes and 13 samples, and this is much smaller than for the RGChannelSet object, that was 1052641 and 13 samples. This is because the CpGs measured by type I are measured by 2 probes.
+
+Then, the accessors *getMeth()* and *getUnmeth()* can be used to get the methylated and unmethylated intensities matrices per each probe and sample.
+```{r}
+Meth<-getMeth(MSet)
+head(Meth)[,1:3]
+
+UnMeth<-getUnmeth(MSet)
+head(UnMeth)[,1:3]
+```
+
+To store the Beta values and/or M values instead of the methylated and unmethyalted signals, a RatioSet object is created:
+```{r}
+# --- Get BETA values ---
+RSet <- ratioConvert(MSet, what = "both", keepCN = TRUE) 
+RSet #Data is not normalized yet. 
+```
+Now, we can get the beta values matrix: 
+```{r}
+beta <- getBeta(RSet)
+head(beta)[,1:3] #show the beta-values of the 6 first probes and 3 first samples 
+```
+For each sample and probe, we have a beta value, from 0 to 1, and they represent the proportion of how many cells had a methylated base. We would expect to get a 1 if we have a perfect methylated locus, or a 0, if it was perfectly unmethylated.
+
+
+## GenomicRatioSet
+
+After obtaining a RatioSet object, we will use the function *mapToGenome()* to get the genomic coordinates to each probe and other information. The output will be an object (GenomicRatioSet) that will have the beta values with the coordinates of the genome. 
+```{r}
+GRset <- mapToGenome(RSet)
+beta<-getBeta(GRset)
+GRset #Get the probe location to the genome
+```
+
+To return the probe locations as a GenomicRanges objects, one can use the accessor granges:
+```{r}
+gr <- granges(GRset)
+head(gr, n= 3)
+```
+For each probe, we can assign its position to the genome. This ones, for example, are in chromosome 1, and the first one is in the position 10525 (single base-pair position).
+
+
+
+# BLOCK 1: QUALITY CONTROL
+
+The aim of this step is to detect outliers in samples and probes and to remove them (if any). We will use the package *minfi*, that provides a quality control plot that calculates the log median intensity in the methylated and unmethylated channels.
+
+So, for each sample, we will get the median of methylated and unmethylated:
+```{r}
+#The functions getQC and plotQC are designed to extract and plot the quality control information from the MethylSet:
+qc <- getQC(MSet)
+qc
+```
+
+When plotting these two medians against each other, it has been observed that good samples will aggregate together, whereas bad sample will tend to be separated (far from the samples clustering), and will have lower median intensities. 
+
+Next, we can plot the median of of unmethylated versus the median of methylated for each sample. 
+```{r}
+plotQC(qc, badSampleCutoff = 10.5)#default
+
+```
+
+The cut off that will determine if a sample is good or bad, is set to 10.
+```{r}
+plotQC(qc, badSampleCutoff = 10) #to change the cut off
+```
+
+When using the cut off equal to 10, there are 9 samples that aggregate together, so these will have good quality, as their median of intensities is high, but there are 3 samples that are below the threshold, which means that some problem may have occurred with the hybridization and this samples have not quite good quality. Therefore, sample 13, 5 and 12 should be removed.
+
+If we use the default threshold, set to 10.5 (the first plot), we would see that the cut off is in the middle of the cluster of the samples, and the median intensity difference between some good samples and some bad samples (6 and 11) would be minimum. So, samples are so close that if one is well hybridized the other can not be as bad as to be rejected and therefore removed. That is why the cut off is set to 10. 
+
+10 samples will pass the first quality control. Therefore, we decide that 5, 12, and 13 samples will be removed. 
+```{r}
+#samples to remove: 13,5,12
+remove<-c(13,5,12)
+rgset<-rgset[,-remove] #remove the samples previously selected, from the rgset object
+targets = targets[-remove,] #remove the samples from the target data frame
+#keep 10 samples
+dim(rgset)
+table(targets$patient.diagnosis.ch1)
+```
+
+We started with 7 samples of Crohn's Disease patients and 6 healthy controls. After removing the bad quality samples, we end with 6 samples of Crohn's Disease and 4 healthy controls. 
+
+To further explore the quality of the samples, it is useful to look at the Beta value densities of the samples, with the option to color the densities by Crohn's Disease status:
+```{r}
+densityPlot(MSet, sampGroups = targets$patient.diagnosis.ch1)
+```
+
+Each line of the plot represents a sample, and they are colored depending on their phenotype. We expect to see most beta values close to 0 or 1, indicating that most of the CpGs in the samples are unmethylated or methylated. In this case, samples have a good shape, as the peaks of beta values are close to 0 and close to 1.
+
+Next, to perform the quality control of the probes, we will analyse the detection p-values for every CpG. Each probe has an specific detection p-value, a measure of how likely it is that a given signal is background fluorescense, so it will be used to identify/know if the probe is well hybridized or not. 
+
+```{r, detection p-values}
+detP<-detectionP(rgset)
+dim(detP) #all the probes we have in the EPIC array
+```
+```{r}
+head(detP)[,1:3] #colums are samples and probes are rows
+```
+
+To properly visualize if samples have probes that are not well hybridized, we will generate a plot. The mean detection p-value for each sample will be plotted, and if a sample has a large mean detection p-value, that exceeds an specific cut off, it will be removed from the analysis. 
+```{r}
+barplot(colMeans(detP),col=factor(targets$patient.diagnosis.ch1),las=2,cex.names=0.8,
+        main="Mean detection p-values")
+
+
+# Add a legend to the plot by indicating the color of each diagnosis group. 
+legend("topright", legend = levels(factor(targets$patient.diagnosis.ch1)), fill = unique(factor(targets$patient.diagnosis.ch1)))
+
+```
+
+
+Important to note that we are plotting the mean of the detection p-value of each sample.
+
+There are a few methods for calculating these detection p-values, depending on the package we are using. In this case, we use the **minfi** package for the methylation analysis, and when using this package it is highly recommended to use an stringent exclusion criteria of p-values > 0.01 being excluded. Minfi uses a method based on the comparison of the total signal(M+U) for each probe to the background singal level, which is estimated from the negative control probes. Small p-values are indicative of a reliable signal whilst large p-values will indicate a poor quality signal.
+
+So, the threshold that will determine if we include or exclude a sample is 0.01. The samples that have a mean detection p-values over 0.01 will be removed, because it will contain so many failed probes. In this case, the mean of the detection p-values for each sample is under the threshold. It doesn't mean that all the probes are well hybridized, we can have a probe that its detection p-value is higher than the threshold, but the average of all the probes for the sample is under the threshold, so we do not remove it, because that means that mainly all the probes of the sample are well hybridized (but not necessarily all of them).
+
+This bar plot only includes the samples that previously passed the quality control. 
+
+```{r}
+## No samples exceed the cutoff of 0.01, so now no samples are going to be removed.
+keep<-colMeans(detP) < 0.01
+table(keep)
+```
+We will continue the analysis will all the 10 samples. 
+
+In the other hand, we can have a failed prove for each of the samples. If the row mean of the detection p-value for a probe is higher than the threshold, it means that the probe has high p-values in all the samples, hence the probe is not well hybridized and has to be removed.
+
+```{r}
+keep<-rowMeans(detP) < 0.01
+table(keep)
+```
+
+11054 probes are removed, and 855782 probes will pass the quality control.
+```{r}
+#keep with the well hibrizided probes in the row of the rgset
+rgset<-rgset[keep,]
+```
+
+## Sex predicion of the samples 
+
+In the sample sheet we don't have the sex information, and may be interested to predict it. 
+As we have removed probes and samples, we create again the MethylSet, RSet and GRset objects:
+
+```{r}
+MSet <- preprocessRaw(rgset)
+RSet <- ratioConvert(MSet, what = "both", keepCN = TRUE)
+GRset <- mapToGenome(RSet)
+```
+
+If we look at the median total intensity of the X chromosome-mapped probes, denoted med(X)med(X), and the median total intensity of the Y-chromosome-mapped probes, denoted med(Y)med(Y), one can observe two different clusters of points corresponding to the gender of the samples. 
+To predict the gender, minfi separates the points by using a cutoff on log2med(Y). Since the algorithm needs to map probes to the X-chr and to the Y-chr, the input of the function getSex needs to be a GenomicMethylSet or a GenomicRatioSet.
+
+```{r}
+predictedSex <- getSex(GRset, cutoff = -2)
+predictedSex
+```
+For each sample, we have added a new column which indicates the gender. To visuallize the results, we can create a plot:
+
+```{r}
+# ---- plot ----
+GRset<-addSex(GRset) #add sex to GRatio object
+plotSex(GRset)
+```
+
+It is clearly seen the difference in the median intensity between the X chromosome-mapped probes, and the Y chromosome-mapped probes, as we observe in the plot two different clusters. As more larger the median intensity of the X probes, and more lower the median intensity of the Y probes, more likely to be a female, while both larger values the median intensity of X and Y chromosome-mapped probes, correspond to a male. 
+
+Samples 3, 5, 6, and 8 correspond to males, and 1, 2, 4, 7, 9 and 10 correspond to females. 
+
+
+# BLOCK 2: ANALYSIS
+
+## Normalization
+
+Until now, no normalization was used to process the data (we had raw data). As we do not expect global differences between the samples, we will use the **preprocessQuantile()** function, that will implement a stratified quantile normalization. 
+The input of this function is a RGChannelSet and it returns a GenomicRatioSet object. 
+
+```{r,message=FALSE}
+# --- Normalization ---
+gRatioSet.quantile <- preprocessQuantile(rgset,verbose = T)
+
+#PLOT
+densityPlot(getBeta(gRatioSet.quantile), sampGroups = targets$patient.diagnosis.ch1)
+```
+
+If we compare the distribution of beta values before and after normalization, we will not see huge differences, but slightly. 
+
+
+## Remove certain CpGs
+
+As this is a disease versus healthy control study, we are not interested in the CpGs probes that are located in the sexual chromosomes, and will be removed. This is because methylations in these chromosomes are very variable and come from imprinting, for example, or other aspects, which are not important for the analysis.
+
+```{r}
+ # --- Get the Annotation ---
+ann850k<-getAnnotation(IlluminaHumanMethylationEPICanno.ilm10b4.hg19)
+head(ann850k)[,1:25] #show only 25 first columns information
+ann850k<-as.data.frame(ann850k)
+```
+For each probe name, there is information regarding the chromosome in which it is located, the genomic position, the probe seq, type of probe, the gene that is mapping to, the relation to island... and others. Important to note that one probe can map to several positions (2 different genes or 2 different isoforms).
+
+From the normalized object, remove those CpG that are in the sexual chromosomes: 
+```{r}
+#The featureNames of the object are the probes. Then, get the probes that are not (!) in the sexual chromosomes in the annotation
+keep <- !(featureNames(gRatioSet.quantile) %in% ann850k$Name[ann850k$chr %in% c("chrX","chrY")]) 
+table(keep) #nearly 20000 probes are located in the chr X and Y
+
+gRatioSet.quantile <- gRatioSet.quantile[keep,] #get in the genomic ratioSet normalized object, the probes previously selected.
+```
+We have 19363 probes in the array that are located in the sexual chromosomes, and are removed.
+
+Moreover, there can be SNPs inside the probes that can have important consequences on the analysis, and as they are very variable between individuals, we will remove all those probes that contain SNPs at the CpGs. 
+As it is known, Cytosine to Thymine (C-T) substitutions are the most common type of SNPs in the genome and in a DNA-methylation analysis, the bisulfite treatment is used in the laboratory to convert the unmethylated cytosines to uracil. This makes that C-T SNPs can interfere with the methylation analysis, because it may cause that a cytosine truly methylated appears as unmethylated, and vice versa. This inaccurate estimation of the methylation levels will impact the interpretation of the results. That is the reason why the probes with SNPs should be removed in the analysis. 
+
+The package minfi has a special function to remove such probes. First apply the function getSnPInfo to the GenomicRatioSet object previously created, and will return a data frame containing SNP information of the probes: 
+
+```{r}
+# --- get SNP information ---
+snp.info<-getSnpInfo(gRatioSet.quantile)
+snp.info[10:20,]
+```
+
+Probe, CpG and SBE correspond to the SNPs that are inside the body of the probe, at the CpG and at the single nucleotide extension, respectively. Then, the columns ended with _rs, will give the name of the SNPs, and the columns ended with _maf, will give the minor allele frequency of the SNPS.
+
+Then, the following function will allows to remove the probes that contain SNPs. 
+```{r}
+gRatioSet.quantile<- dropLociWithSnps(gRatioSet.quantile)
+dim(gRatioSet.quantile)
+```
+
+Keep with 804995 probes. 
+
+Now we can get the beta values to proceed with the downstream analysis.
+
+```{r}
+# --- Betas values (normalized) ---
+betas<-getBeta(gRatioSet.quantile)
+head(betas)[,1:2]
+```
+
+It is important to check that the column names of betas (samples) are in the same order than the targets basename
+```{r}
+# --- Same sample order ---
+targets$Basename<-sub("_2011.*", "", colnames(rgset))
+identical(colnames(betas),targets$Basename)
+colnames(betas)
+targets$Basename 
+```
+
+## DMPs without covariates
+
+In this step, we are going to identify which are the CpG sites that are differentially methylated between the different conditions (crohn's disease versus healthy). 
+
+As M-values have nicer distributional properties than beta-values, they are more statistically valid for the differential analysis of methylation, obtaining t-statistics and their respective p-values for each CpG. In the other hand, Beta values will be used for the graphical representation of the methylation levels, as representing percentages has a more intuitive biological interpretation. 
+
+Those probes with a p-value under 0.05 will be differentially methylated between the crohn's disease and the healthy samples of the patients, thus, will be selected for the analysis.
+
+```{r,message=FALSE}
+library(limma) #used to build a linear model
+
+# --- Design a matrix ---
+group<-as.factor(pData(gRatioSet.quantile)$patient.diagnosis.ch1)
+design <- model.matrix(~group)
+colnames(design)<-c("Intercept","Group")
+
+# --- Get M-values ---
+Mvalues<-logit2(betas)
+
+# --- Generate adjusted matrix ---
+fit <- lmFit(Mvalues, design)
+
+fit2 <- eBayes(fit)
+
+# --- Get results ---
+results <- topTable(fit2,coef="Group",num=dim(fit2)[1],sort.by="P",adjust.method = "BH") 
+head(results)
+
+#Subset the results that have a p-value under 0.05
+dmp_all<-subset(results,results$P.Value<.05)
+dim(dmp_all)
+```
+
+From 804995 probes, only 66285 are differentially methylated (DM) between crohn and healthy patients. As we want to know in which regions they are located, we need to merge the resulting data.frame containing the DM probes with the annotation (by rows). As a result, we will obtain the gene name the probe is matching to, the relation to island, and the position where each CpG is located, to know if it is in the promoter region or not.
+
+
+```{r}
+# --- Merge the DM probes with the annotation ---
+dmp_all <- merge(dmp_all,ann850k[,c("UCSC_RefGene_Name","Relation_to_Island","UCSC_RefGene_Group")], by="row.names")
+rownames(dmp_all)<-dmp_all$Row.names
+dmp_all<-dmp_all[,-1]#remove the column Row.names, as we already have the probes in the rows
+head(dmp_all)
+```
+
+We obtained a huge number of DM positions, that correspond to all the CpG sites of the whole genome. But in fact, we are only interested in those CpGs that are located in the promoter, and promoter plus island, as it is known that methylation in promoters is related to the regulation of the expression of a gene: high methylation - low expression ; low methylation - High expression.
+
+For this reason, we will get all the CpGs that are located in TSS1500, TSS200, 5'UTR or 1st Exon of the gene, which correspond to the promoter region.
+
+```{r}
+# --- Get CpG probes that are in the promoter ---
+proms<-dmp_all[grep("TSS1500|TSS200|5'UTR|1stExon",dmp_all$UCSC_RefGene_Group),]
+dim(proms)
+```
+From 66285 DMP, 18489 are in promoter regions. Moreover, we are also interested to know which of them are in the island. 
+
+```{r}
+# --- Get the DMp that are in promoter+island ---
+proms.island<-proms[proms$Relation_to_Island=="Island",]
+dim(proms.island)
+head(proms.island)
+```
+5197 differentially methylated CpG positions are in the promoter islands of the genes. 
+
+To test visually if this DM positions can separate the two types of samples, crohn disease in one site and healthy in the other site, first we have to distinguish between the two type of samples, and create a code for colors. Those that have 'CD' in their name are crohn's disease samples, and if they have an 'N', are healthy samples.
+```{r,message=FALSE}
+Healthy <- grep("N",colnames(betas),perl=T)
+Crohn <- grep("CD",colnames(betas),perl=T)
+spcol <- c(rep("red",length(Crohn)),rep("blue1",length(Healthy)))
+library(gplots)
+```
+
+For a proper visualization we will be even more stringent and the CpG DM in the promoter + island will be subseted by LogFC, which is the change in the average of M-values between conditions. So, those probes that have a larger or smaller logFC value, will be stronger differentially methylated, and this are plotted. 
+
+Once the most DM CpGs are selected, the beta values of this probes are extracted (as beta values are preferable to visualize). 
+```{r}
+# Subset by logFC (for visualize properly)
+proms.island_sub<-proms.island[proms.island$logFC>1.5 | proms.island$logFC<  -1.5, ]
+
+# --- Heatmap ---
+#We want a matrix of those CpG in betas and those that are in proms.islands results, and first all the crohn and then all the healthy
+l <- as.matrix(betas[rownames(betas) %in% rownames(proms.island_sub),c(Crohn,Healthy)])
+heatmap.2(l,
+          main="Diffmeth CpG's",
+          labRow=NA,
+          trace="none",
+          na.rm=T,
+          col=greenred,
+          ColSideColors=spcol,
+          distfun=function(x) dist(x,method="euclidean"),
+          dendrogram = "column")
+```
+
+In this heatmap we can see that there is a healthy sample that aggregates with the crohn's disease sample for this CpG probes that we are representing. The first set of CpGs are higher expressed in healthy samples than in crohn's. Then the second block of CpGs is low methylated in healthy and more methylated in crhon's samples. The third set of CpG probes is hypermethylated in healthy samples, and in general, lower in crohn's. Finally, the last block is hypomethylated in healthy and hypermethylated in crohn's disease adipose samples. 
+
+Then, a PCA is performed to see how samples are split. 
+```{r,message=FALSE}
+# ---PCA---
+pca <- prcomp(t(na.omit(l)))
+plot(pca$x[,1],pca$x[,2],col=spcol,cex=.2)+text(pca$x[,1],pca$x[,2],labels=rownames(pca$x),col=spcol,cex=1)
+```
+
+In the PCA plot it is seen that samples, in general, are well splitted. Crohn's samples stay at one side (aggregate together) and healthy samples at the other, except just one of them (N3), that stays more in the middle. 
+
+
+## DMPs with sex
+
+Now, we will identify the differentially methylated CpG but considering the variable sex, which has been previously predicted. For that, a matrix is designed using *limma*. 
+
+Then, using the *topTable()* function of limma package, the differentially methylated CpG probes will be extracted. These results are ordered by p-value.
+```{r}
+# --- Design a matrix ---
+group<-as.factor(pData(gRatioSet.quantile)$patient.diagnosis.ch1) #0 --Crohn Disease; 1-- Healthy
+design <- model.matrix(~group+pData(gRatioSet.quantile)$predictedSex) #0--Female; 1--Male
+colnames(design)<-c("Intercept","Group","Gender")
+head(design)
+
+# --- Get M-values --- (as they are better for the statistical analysis)
+Mvalues<-logit2(betas)
+
+# --- Fit the model ---
+fit <- lmFit(Mvalues, design)
+
+fit2 <- eBayes(fit)
+
+#get the table of results
+results <- topTable(fit2,coef="Group",num=dim(fit2)[1],sort.by="P",adjust.method = "BH") ####Pval list 1
+head(results)
+
+
+```
+
+Those probes with a p-value under 0.05 will be differentially methylated between the crohn's disease and the healthy samples of the patients. 
+
+```{r}
+# --- Subset results by p-value ---
+dmp_all_sex<-subset(results,results$P.Value<.05)
+dim(dmp_all_sex)
+
+```
+
+From the 804995 probes that enter the analysis, 57135 are found to be significant differentially methylated between crhon and healthy patients. 
+
+Next, the resulting data.frame containing the DM CpG sites will be merged with the annotation (by rows), to get the gene name, relation to island, and the position where the CpG is located, with the aim to know if it is in the promoter or not.
+
+```{r}
+# --- Merge the DM probes with the annotation ---
+dmp_all_sex <- merge(dmp_all_sex,ann850k[,c("UCSC_RefGene_Name","Relation_to_Island","UCSC_RefGene_Group")], by="row.names")
+dmp_all_sex<-as.data.frame(dmp_all_sex) #create a data frame
+rownames(dmp_all_sex)<-dmp_all_sex$Row.names #Specify that the column named Row.names is the row 
+dmp_all_sex<-dmp_all_sex[,-1] #remove the column Row.names, as we already have the probes in the rows
+head(dmp_all_sex)
+```
+
+We obtained a huge number of DMP, that correspond to all the CpG sites of the whole genome. But in fact, we are only interested in those CpGs that are located in the promoter, and promoter plus island, as it is known that methylation in promoters is related to the regulation of the expression of a gene: high methylation -low expression ; low methylation - High expression.
+
+For this reason, we will get all the CpGs that are located in TSS1500, TSS200, 5'UTR or 1st Exon of the gene, which correspond to the promoter region.
+
+```{r}
+# --- Get CpG probes that are in the promoter ---
+proms_sex<-dmp_all_sex[grep("TSS1500|TSS200|5'UTR|1stExon",dmp_all_sex$UCSC_RefGene_Group),]
+dim(proms_sex)
+```
+
+From the 57135 differentially methylated CpG positions, 16696 are found to be located in the promoter regions. Moreover we are also interested to know which of them are in the island. 
+
+```{r}
+proms.island_sex<-proms_sex[proms_sex$Relation_to_Island=="Island",]
+dim(proms.island_sex)
+```
+5328 DM CpG positions are in the promoter plus island. 
+
+For a proper visualization we will be even more stringent and the CpG DM in the promoter + island will be subseted by LogFC, which is the change in the average of M-values between conditions. So, those probes that have a larger or smaller logFC value, will be stronger differentially methylated, and this are plotted. 
+
+Then, the beta values of this probes are extracted (as beta values are preferable to visualize). 
+
+```{r}
+# --- Subset by logFC ---
+proms.island_sex_sub<-proms.island_sex[proms.island_sex$logFC>1.5 | proms.island_sex$logFC<  -1.5, ]
+
+# --- Create a vector of colors depending on the condition ---
+Healthy <- grep("N",colnames(betas),perl=T)
+Crohn <- grep("CD",colnames(betas),perl=T)
+spcol <- c(rep("red",length(Crohn)),rep("blue1",length(Healthy)))
+
+library(gplots)
+# --- get the beta values ---
+l <- as.matrix(betas[rownames(betas) %in% rownames(proms.island_sex_sub),c(Crohn,Healthy)])
+
+# --- Heatmap ---
+heatmap.2(l,
+          main="Differentially methylated CpG's",
+          labRow=NA,
+          trace="none",
+          na.rm=T,
+          col=greenred,
+          ColSideColors=spcol,
+          distfun=function(x) dist(x,method="euclidean"),
+          dendrogram = "column")
+```
+
+The healthy adipose samples aggregate together in one side, and the crhon's disease samples aggregate in the other side of the heatmap, which means that both conditions have a differentially methylated CpG pattern. The first set of CpGs are very low methylated in crohn and more methylated in healthy samples. Then there is a second set of CpGs that are low methylated in healthy samples, and higher methylated in crohn's samples. We can distinguish a third block of CpG probes that are highly methylated in healthy samples and lower in crohn's. Finally the last block of CpG is in general low methylated in healthy (except the first healthy sample), and higher methylated in crohn's disease samples. 
+
+With the following PCA we can see how well the different type of samples are spitted. 
+```{r}
+# --- PCA ---
+pca <- prcomp(t(na.omit(l)))
+plot(pca$x[,1],pca$x[,2],col=spcol,cex=.2)
+text(pca$x[,1],pca$x[,2],labels=rownames(pca$x),col=spcol,cex=1)
+
+```
+
+In general samples are very well splitted. Crhon's samples stay at one side, and healthy samples at the other, except just one of them (N3), that stays more in the middle.
+
+Note that differential methylation of the individual CpG sites may not be as informative (and it is hard to detect) as knowing the differntially methylated CpG regions. A more appropriate way to proceed should be using bumphunter to detect DM CpG regions (instead of single positions).
+
+
+# BLOCK 3
+
+After performing the differential methylation analysis, we have obtained a long list of significantly differentially methylated CpG sites that have to be interpreted. In this block, we will try to identify which biological pathways are over represented in those differentially methylated CpGs by performing a typical gene ontology enrichment with the function *enrichGO()* of the package *ClusterProfiler*, and by using the *gometh()* function in the *MissMethyl* R package, which is specifically designed for the analysis of DNA methylation data from Illumina arrays.
+
+To perform this analyses, the genes that are mapped with the differentially methylated CpG sites will be selected. The name of the genes are in the column UCSC_RefGene_Name. As one particular CpG can map to different isoforms or overlapping genes, in the vector they will be separated by ; (semicolon) and we have to split the elements of the vector, and get the unique gene identifiers. This vector containing the names of the genes, will be the input for the typical GO and Missmethyl GO enrichment analysis.
+
+## GO Enrichment
+
+Libraries needed:
+```{r,message=FALSE}
+# --- Libraries ---
+library(clusterProfiler)
+library(org.Hs.eg.db)
+```
+
+### ALL DMP
+
+We will start by conducting a typical GO enrichment analysis for biological processes of all the Differentially Methylated CpG Positions (DMP).
+
+```{r,message=FALSE,warning=FALSE}
+genesid<-dmp_all$UCSC_RefGene_Name #Select the column where the Gene Name information is
+genesid<- strsplit(as.character(genesid),';') #Split the column by the semicolon, as we can have different isoforms or different genes
+genesid<-unique(unlist(genesid))#Select the unique names
+genesid<-genesid[ genesid != "" ]##remove empty elements from a vector, so remove CpG that do not have any gene annotated
+genesid <- genesid[!is.na(genesid)]
+
+eg<-bitr(genesid, fromType="SYMBOL", toType="ENTREZID", OrgDb="org.Hs.eg.db")#convert gene symbols in the "genesid" object to Entrez IDs using the "bitr" function.
+
+#Perform gene ontology (GO) enrichment analysis on a set of genes represented by their Entrez IDs.
+eGO_dmp <- enrichGO(gene         = eg$ENTREZID,
+                 OrgDb         = org.Hs.eg.db,
+                 keyType       = 'ENTREZID',
+                 ont           = "BP",
+                 pAdjustMethod = "BH",
+                 pvalueCutoff  = 0.05,
+                 qvalueCutoff  = 0.05,
+                 readable=T
+)
+
+#create a dot plot of the results of the GO enrichment analysis.
+dotplot(eGO_dmp, title=" All Differentially methylated CpGs ",showCategory=25)
+
+```
+
+The resulting plot shows a dot for each enriched GO term, with the size of the dot representing the number of genes associated with the term, and the color representing the significance of the enrichment. The y-axis shows the top 25 enriched GO terms, in which we can find terms related with the development of specific organs, chemical signaling, cell adhesion...
+
+
+```{r}
+dim(eGO_dmp)
+```
+In this case, the typical GO enrichment analysis has found 1656 processes related with Crohn's disease. 
+
+
+### PROMS+ISLAND
+
+Now, we will perform a GO enrichment analysis, but only of those Differentially Methylated CpGs positions that are found in promoter plus island regions. Follow the same steps than before. 
+
+```{r,message=FALSE,warning=FALSE}
+genesid<-proms.island$UCSC_RefGene_Name#select the column that contains information about the genes that the CpG maps to. 
+genesid<- strsplit(as.character(genesid),';') #Split the column by the semicolon, as we can have different isoforms or different genes
+genesid<-unique(unlist(genesid))#Select the unique names
+genesid<-genesid[ genesid != "" ]##remove empty elements from a vector, so remove CpG that do not have any gene annotated
+genesid <- genesid[!is.na(genesid)]
+
+eg<-bitr(genesid, fromType="SYMBOL", toType="ENTREZID", OrgDb="org.Hs.eg.db")#convert gene symbols in the "genesid" object to Entrez IDs using the "bitr" function.
+eGO_proms_island <- enrichGO(gene         = eg$ENTREZID,
+                 OrgDb         = org.Hs.eg.db,
+                 keyType       = 'ENTREZID',
+                 ont           = "BP",
+                 pAdjustMethod = "BH",
+                 pvalueCutoff  = 0.05,
+                 qvalueCutoff  = 0.05,
+                 readable=T
+)#Perform gene ontology (GO) enrichment analysis on a set of genes represented by their Entrez IDs.
+
+dotplot(eGO_proms_island, title=" Proms+Island CpGs ",showCategory=15)
+
+```
+
+This plot shows the top 25 enriched GO terms, which are related with the development of specific organs, tubular structures, and gene regulation or cellular processes.
+
+```{r}
+dim(eGO_proms_island)
+```
+After performing the GO enrichment analysis for only those DMP found in promoter plus island regions, we found 358 biological processes related with Crohn's disease. 
+
+
+## Missmethyl GO enrichment
+
+From this Package, we will use the function *gometh()*, that takes as input a character vector of the names of the significant CpG sites previously obtained. We will start by performing a missmethyl GO enrichment analysis of all DMP and then we will perform another analysis focused in only those DMP found in promoter + island regions. 
+
+
+```{r,message=FALSE}
+library(missMethyl)
+```
+
+### All dmp
+
+```{r,missmethyl dmp}
+# --- Missmethyl GO analysis ---
+mismethyl_dmp <- gometh(rownames(dmp_all),all.cpg = rownames(betas),collection = "GO", 
+                        array.type = "EPIC",plot.bias = T,prior.prob = T,equiv.cpg = T,anno = ann850k) 
+```
+
+The *gometh()* function takes into account the varying numbers of CpGs associated with each gene, and those that have more CpGs associated with them will have a higher probability of being identified as differentially methylated compared to genes with fewer CpGs. This bias in the data can be seen in this plot. 
+
+```{r}
+#Subset the results of the previous step to only include those that are related to Biological Processes.
+mismethyl_dmp<-mismethyl_dmp[mismethyl_dmp$ONTOLOGY=="BP",]
+
+#Select the terms that are statistically significant
+mismethyl_dmp<-mismethyl_dmp[mismethyl_dmp$P.DE<.05,]
+
+#Ascending reorder the row based on the p-value column
+mismethyl_dmp<-mismethyl_dmp[order(mismethyl_dmp$P.DE,decreasing = F),]
+
+#Select the 25 top GO terms
+topGSA(mismethyl_dmp, number=15)
+
+```
+
+From the output we can see many of the top GO categories correspond to organ development, regulation of biological processes and response to stimulus.
+
+```{r}
+dim(mismethyl_dmp)
+```
+The missmethyl GO enrichment analysis has found 1444 terms associated with Crohn's disease.
+
+### Proms+Islands
+
+Next, it is performed a missmethyl GO enrichment of those DMP found in promoter plus island regions. 
+```{r}
+# --- Missmethyl GO analysis ---
+mismethyl_Proms_island <- gometh(rownames(proms.island),all.cpg = rownames(betas),collection = "GO", 
+                        array.type = "EPIC",plot.bias = T,prior.prob = T,equiv.cpg = T,anno = ann850k) 
+
+#Subset the results of the previous step to only include those that are related to Biological Processes.
+mismethyl_Proms_island<-mismethyl_Proms_island[mismethyl_Proms_island$ONTOLOGY=="BP",]
+
+#Select the terms that are statistically significant
+mismethyl_Proms_island<-mismethyl_Proms_island[mismethyl_Proms_island$P.DE<.05,]
+
+#Ascending reorder the row based on the p-value column
+mismethyl_Proms_island<-mismethyl_Proms_island[order(mismethyl_Proms_island$P.DE,decreasing = F),]
+
+#Select the 25 top GO terms
+topGSA(mismethyl_Proms_island, number=25)
+
+```
+
+Most of the top terms are associated with biosynthetic and metabolic processes. Then we can also find terms related to organs development.
+
+```{r}
+dim(mismethyl_Proms_island)
+```
+
+The missmethyl GO enrichment in promoter plus island region analysis has found 459 terms associated with Crohn's disease.
+
+
+## Biology of Crohn's disease
+
+Crohn's disease is a type of inflammatory bowel disease that mainly causes inflammation in different parts of the gastrointestinal tract, which can lead to abdominal pain, severe diarrhea, malnutrition, and other conditions. 
+Studies suggest that GO terms related to immune system, metabolic processes, cell differentiation, response to stimulus, regulation of nitrogen and development processes were the most enriched terms associated with patients suffering from Crohn's disease (1,2).
+
+All the enrichment analysis performed in this study contain more or less GO terms that are associated with the disease and suggested by other studies. The top terms obtained from the typical GO enrichment analysis (both DMP and Prom+island) seem to be very associated with development. It is seen that terms related to development processes where all significantly downregulated in Crohn's disease (1), which may indicate a delayed growth or sexual development of patients with the disease (3). So, we obtained a lot of significant DMP that map to genes related with the development.
+
+The disease is also related with metabolic processes terms (1), also found in the enrichments performed in this study. Inflammation is a process strongly linked to the generation of metabolites, specially to nitrogen (4,5). In the Missmethyl GO enrichment considering all the DMP, there were found a lot of significant terms that correspond to metabolism (such as positive regulation of cellular metabolic process), and specially to nitrogen (such as regulation of nitrogen compound metabolic process). So, there is an association of Crohn's disease with nitrogen metabolism.
+
+Moreover, we also identified terms related to the response to stimulus and to the immune system. Note that the terms related with immune system in general have a more large p-value (still under 0.05), and when ranking the terms, they will be in the middle-bottom part of the list, so they may not be as important and the terms related to metabolic processes, development processes, response, and cell differentiation. 
+
+Almost all the terms described will be found more or less in all the enrichment analysis performed, but the combination of the different GO terms that is more likely to the biology of the disease, is most represented in the analysis performed using the Missmethyl Package and with all the DMP CpG sites. 
+
+Next, we can see that the terms described above are found in the missmethyl + DMP enrichment analysis.
+```{r}
+#nitrogen and metabolic processes
+head(mismethyl_dmp[grep('nitrogen',mismethyl_dmp$TERM),])
+head(mismethyl_dmp[grep('metabolic',mismethyl_dmp$TERM),])
+
+#cell differentiation
+head(mismethyl_dmp[grep('differentiation',mismethyl_dmp$TERM),])
+
+#response to stimulus
+head(mismethyl_dmp[grep('stimulus',mismethyl_dmp$TERM),])
+
+#immune system
+head(mismethyl_dmp[grep('immune',mismethyl_dmp$TERM),])
+
+```
+
+
+# BIBLIOGRAPHY
+
+1.Serena C, Millan M, Ejarque M, Saera-Vila A, Maymó-Masip E, Núñez-Roa C, Monfort-Ferré D, Terrón-Puig M, Bautista M, Menacho M, Martí M, Espin E, Vendrell J, Fernández-Veledo S. Adipose stem cells from patients with Crohn's disease show a distinctive DNA methylation pattern. Clin Epigenetics. 2020 Apr 6;12(1):53. doi: 10.1186/s13148-020-00843-3. PMID: 32252817; PMCID: PMC7137346.
+
+2.Garza-Hernandez, D., Sepulveda-Villegas, M., Garcia-Pelaez, J. et al. A systematic review and functional bioinformatics analysis of genes associated with Crohn’s disease identify more than 120 related genes. BMC Genomics 23, 302 (2022). https://doi.org/10.1186/s12864-022-08491-y
+
+3.Crohn’s disease - Symptoms and causes - Mayo Clinic. Accessed March 24, 2023. https://www.mayoclinic.org/diseases-conditions/crohns-disease/symptoms-causes/syc-20353304
+
+4.Kolios G, Valatas V, Ward SG. Nitric oxide in inflammatory bowel disease: a universal messenger in an unsolved puzzle. Immunology. 2004 Dec;113(4):427-37. doi: 10.1111/j.1365-2567.2004.01984.x. PMID: 15554920; PMCID: PMC1782592.
+
+5.Ni J, Shen TD, Chen EZ, Bittinger K, Bailey A, Roggiani M, Sirota-Madi A, Friedman ES, Chau L, Lin A, Nissim I, Scott J, Lauder A, Hoffmann C, Rivas G, Albenberg L, Baldassano RN, Braun J, Xavier RJ, Clish CB, Yudkoff M, Li H, Goulian M, Bushman FD, Lewis JD, Wu GD. A role for bacterial urease in gut dysbiosis and Crohn's disease. Sci Transl Med. 2017 Nov 15;9(416):eaah6888. doi: 10.1126/scitranslmed.aah6888. PMID: 29141885; PMCID: PMC5808452.
+

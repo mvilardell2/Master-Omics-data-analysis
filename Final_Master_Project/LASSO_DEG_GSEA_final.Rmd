@@ -1,0 +1,1365 @@
+---
+title: "Final Report"
+subtitle: "Variable Selection, DEG and GSEA of no-radiated samples"
+author: "Marina Vilardell"
+date: "2023-08-16"
+output: 
+  BiocStyle::html_document:
+    number_sections: true
+    toc_float: yes
+---
+
+# Subset no-radiated samples
+
+From now on, we will focus on the analysis of no-radiated samples.
+
+```{r}
+noradiated<-rownames(pdata[pdata$Treatment=='NOR',])
+length(noradiated)
+
+brca.noduplicated.norad<-brca.noduplicated[,noradiated]
+dim(brca.noduplicated.norad)
+```
+
+# Filtering
+
+There are different approaches to filter data, avoiding unexpressed genes or genes that do not vary among different conditions. In this case, we will filter by standard deviation.
+
+```{r,warning==FALSE}
+head(exprs(brca.noduplicated.norad[grep('BRCA|MYC',rownames(exprs(brca.noduplicated.norad))),]))[,1:5]
+```
+
+Before filtering we have the presence of both BRCA1 and BRCA2 genes. BRCA1 expression levels are a little bit higher than BRCA2. Then, there are 4 genes related to the MYC family, being the MYC with the highest expression gene. 
+
+Different filtering criteria was applied (standard deviation 0.75, 0.5 and no filtering). 0.75 resulted to be too stringent, so we kept with the standard deviation 0.5 filtering criteria.
+
+```{r}
+sd <- apply(exprs(brca.noduplicated.norad),1,sd)
+summary(sd)
+threshold<-quantile(sd,0.5)
+
+top.pos<-which(sd>threshold)
+brca.rma.norad_filt<-brca.noduplicated.norad[top.pos,]
+
+dim(brca.rma.norad_filt)
+pData(brca.rma.norad_filt)<-pdata[noradiated,]
+```
+
+After filtering, we keep with 10961 probe sets.
+
+```{r}
+brca<-exprs(brca.rma.norad_filt)
+exprs(brca.rma.norad_filt[grep('BRCA|MYC',rownames(exprs(brca.rma.norad_filt))),])[,1:5]
+
+rownames(brca)[1]<-'TCONS_00029157'
+brca<-brca[order(rownames(brca)),]
+
+brca<-ExpressionSet(assayData = brca)
+
+#rownames(pdata)<-gsub('-','.',rownames(pdata))
+#rownames(pdata)<-gsub('127.CEL','X127.CEL',rownames(pdata))
+
+pData(brca)<-pdata[noradiated,]
+colnames(brca)
+
+head(exprs(brca))[,1:5]
+
+```
+
+BRCA1 and BCRA2 both pass the filtering step and 3 genes from the MYC family, which means that the standard deviation of the expression levels of these genes is over the 2nd quantile of standard deviation.
+
+# Variable selection binomial
+
+This approach takes into account the differences in predictor effects across the comparisons. It allows to identify the specific predictor variables that are associated with each comparison. In this case, it's reasonable to expect that certain predictor variables may not have an effect in all the comparisons. For example, if a predictor variable represents chemotherapy treatment, it may only be relevant in comparisons involving individuals who have undergone chemotherapy. 
+
+Therefore, using a binomial approach for variable selection will allow to capture these specific associations and identify predictor variables that are relevant to each comparison separately, so we will get the variables that are better adjusted with the phenotype, in this case.  This can provide more accurate and meaningful results for your analysis.
+
+We want to study the next comparisons: 
+
+- BRCA1.AF vs NOMUT.AF
+
+- BRCA1.SA VS NOMUT.SA
+
+- BRCA2.AF VS NOMUT.AF
+
+- BRCA2.SA VS NOMUT.SA
+
+
+```{r}
+# ---  Load the data ---
+library(readxl)
+Patient_info <- as.data.frame(read_excel("../Patient info.xlsx"))
+
+# --- Prepare it ---
+# Change the row names for their array code identification
+rownames(Patient_info)<-Patient_info$`ARRAY CODE`
+rownames(Patient_info)<-gsub('LL','L',rownames(Patient_info))
+rownames(Patient_info)<-gsub('SG-127.CEL','X127.CEL',rownames(Patient_info))
+rownames(Patient_info)<-gsub('SG-13.CEL','SG-103.CEL',rownames(Patient_info))
+rownames(Patient_info)<-gsub('SG-14.CEL','SG-104.CEL',rownames(Patient_info))
+rownames(Patient_info)<-gsub('-','.',rownames(Patient_info))
+
+
+#Rename smoking variable of patients
+Patient_info$`SMOKING HISTORY`[Patient_info$`SMOKING HISTORY`=='EX']<-'SI'
+Patient_info$`SMOKING HISTORY`[Patient_info$`SMOKING HISTORY`=='Yes']<-'SI'
+
+Patient_info$`YEARS AFTER RADIO`[is.na(Patient_info$`YEARS AFTER RADIO`)]<-0
+Patient_info$`YEARS AFTER QUIMIO`[is.na(Patient_info$`YEARS AFTER QUIMIO`)]<-0
+
+# Get only no-radiated samples
+noradiated<-gsub('-','.',noradiated)
+noradiated<-gsub('127.CEL','X127.CEL',noradiated)
+Patient_info<-Patient_info[noradiated,]
+
+# Remove NA patients from smoking history
+Patients_smoking<-Patient_info[!is.na(Patient_info$`SMOKING HISTORY`),]
+smoking_NA<-Patient_info[is.na(Patient_info$`SMOKING HISTORY`),]
+dim(smoking_NA) # 7 patients have NA for smoking history
+
+colnames(brca)<-gsub('-','.',colnames(brca))
+colnames(brca)<-gsub('127.CEL','X127.CEL',colnames(brca))
+smoking_samples<-intersect(colnames(brca),rownames(Patients_smoking))
+
+#Select only the patients with smoking information from the filtered and normalized object
+brca_smoking<-brca[,smoking_samples]
+
+#Transform to factor
+Patients_smoking$`SMOKING HISTORY`<-as.factor(Patients_smoking$`SMOKING HISTORY`)
+Patients_smoking$RADIO<-as.factor(Patients_smoking$RADIO)
+Patients_smoking$QUIMIO<-as.factor(Patients_smoking$QUIMIO)
+#str(Patients_smoking)
+
+#Add phenotype
+Patients_smoking$Phenotype<-pData(brca_smoking)$Phenotype
+Patients_smoking$Phenotype<-as.factor(Patients_smoking$Phenotype)
+```
+
+Check the column names and the row names are in the same order:
+```{r}
+identical(rownames(Patients_smoking),colnames(brca_smoking))
+Patients_smoking$Phenotype<-pData(brca_smoking)$Phenotype
+
+table(Patients_smoking$Phenotype)
+```
+
+## Data summary
+
+Summary of the important variables:
+
+```{r,warning=FALSE}
+library(tableone)
+
+factor(Patient_info$CARRIER)
+#Rename smoking variable of patients
+Patient_info$CARRIER[Patient_info$CARRIER=='NUMUT']<-'NUMUT'
+Patient_info$CARRIER[Patient_info$CARRIER=='CAN-ESPOR']<-'NUMUT'
+
+Patients_smoking$CARRIER[Patients_smoking$CARRIER=='NUMUT']<-'NUMUT'
+Patients_smoking$CARRIER[Patients_smoking$CARRIER=='CAN-ESPOR']<-'NUMUT'
+
+
+tableOne<-CreateTableOne(data=Patient_info[,c(6,7,8,15,16,17,18,19,20)])
+tableOne_smoking<-CreateTableOne(data=Patients_smoking[,c(6,7,8,15,16,17,18,19,20,21)])
+summary(tableOne)
+summary(tableOne_smoking)
+#print(tableOne, showAllLevels = TRUE, formatOptions = list(big.mark = ","))
+```
+
+## BRCA1 
+
+### - BRCA1.SA vs NOMUT.SA
+
+Only 3 variables to consider: age, smoking and cibersort.
+
+```{r,warning=FALSE}
+# --- Select the patients that have this condition ---
+Patients_brca1.sa<-Patients_smoking[Patients_smoking$Phenotype=='BRCA1.SA'| Patients_smoking$Phenotype=='NOMUT.SA',]
+brca_smk_brca1.sa<-brca[,rownames(Patients_brca1.sa)]
+#str(Patients_brca1.sa)
+
+# --- Variable selection ---
+ybrca1.sa<-as.factor(Patients_brca1.sa$Phenotype)
+xbrca1.sa<-Patients_brca1.sa[,c('AGE, EXTRACTION TIME','SMOKING HISTORY')]
+
+Total_T_CD4_cibersort<-data.frame(Total_T_CD4_ciber)
+Total_T_CD4_cibersort_brca1<-as.data.frame(Total_T_CD4_ciber[intersect(rownames(Total_T_CD4_ciber),rownames(Patients_brca1.sa)),])
+rownames(Total_T_CD4_cibersort_brca1)<-intersect(rownames(Total_T_CD4_ciber),rownames(Patients_brca1.sa))
+colnames(Total_T_CD4_cibersort_brca1)<-'Total_T_CD4_ciber'
+
+x <- model.matrix(ybrca1.sa~xbrca1.sa$`AGE, EXTRACTION TIME`+ xbrca1.sa$`SMOKING HISTORY`+Total_T_CD4_cibersort_brca1$Total_T_CD4_ciber-1)
+x<-x[,-2]
+
+# Fit the model
+lasso_model <- cv.glmnet(x, ybrca1.sa, family = "binomial", standardize=TRUE)
+
+# Select the optimal lambda value based on cross-validation
+optimal_lambda <- lasso_model$lambda.min
+
+coef(lasso_model,s=optimal_lambda)
+
+```
+
+The model has shrinked to 0 all the coefficients for the 3 variables we were considering, so in this case, LASSO suggests that no variables have an impact to the phenotype. 
+
+
+### - BRCA1.AF vs NOMUT.AF
+
+Now, as we are selecting cancer affected patients, we have to consider other variables such as chemotherapy, radiotherapy, and the years that have passed after the patient underwent these treatments. 
+
+```{r,warning=FALSE}
+Patients_smoking$QUIMIO<-as.factor(Patients_smoking$QUIMIO)
+Patients_smoking$RADIO<-as.factor(Patients_smoking$RADIO)
+Patients_smoking$`SMOKING HISTORY`<-as.factor(Patients_smoking$`SMOKING HISTORY`)
+
+# --- Select the patients that have this condition ---
+Patients_brca1.af<-Patients_smoking[Patients_smoking$Phenotype=='BRCA1.AF'| Patients_smoking$Phenotype=='NOMUT.AF',]
+brca_smk_brca1.af<-brca[,rownames(Patients_brca1.af)]
+
+# --- Variable selection ---
+ybrca1.af<-as.factor(Patients_brca1.af$Phenotype)
+xbrca1.af<-Patients_brca1.af[,c('AGE, EXTRACTION TIME','QUIMIO','RADIO','YEARS AFTER QUIMIO','YEARS AFTER RADIO','SMOKING HISTORY')]
+
+rownames(Patients_brca1.af)<-gsub('-','.',rownames(Patients_brca1.af))
+
+Total_T_CD4_cibersort_BRCA.AF<-as.data.frame(Total_T_CD4_ciber[intersect(rownames(Total_T_CD4_ciber),rownames(Patients_brca1.af)),])
+rownames(Total_T_CD4_cibersort_BRCA.AF)<-intersect(rownames(Total_T_CD4_ciber),rownames(Patients_brca1.af))
+colnames(Total_T_CD4_cibersort_BRCA.AF)<-'Total_T_CD4_ciber'
+
+
+x <- model.matrix(ybrca1.af~xbrca1.af$`AGE, EXTRACTION TIME`+xbrca1.af$QUIMIO+xbrca1.af$RADIO+xbrca1.af$`YEARS AFTER QUIMIO`+xbrca1.af$`YEARS AFTER RADIO`+xbrca1.af$`SMOKING HISTORY`+Total_T_CD4_cibersort_BRCA.AF$Total_T_CD4_ciber-1)
+x<-x[,-2]
+
+# Fit the model
+lasso_model <- cv.glmnet(x, ybrca1.af, family = "binomial", standardize=TRUE)
+
+# Select the optimal lambda value based on cross-validation
+optimal_lambda <- lasso_model$lambda.min
+
+coef(lasso_model,s=optimal_lambda)
+```
+
+In this case, LASSO indicates that age and smoking have an impact the the phenotype, so this variables will be added to the Limma model. 
+
+As we will compare within BRCA1 carriers, the two models, BRCA1.healthy vs NOMUT.healthy and BRCA1.affected and NOMUT.affected need to have the same variables. For this reason, when performing the differential expression analysis, we will add smoking and age as covariates for both of the models (healthy and affected).
+
+## BRCA2
+
+We will repeat the same process for BRCA2.
+
+### - BRCA2.SA VS NOMUT.SA
+
+```{r,warning=FALSE}
+# --- Select the patients that have this condition ---
+Patients_brca2.sa<-Patients_smoking[Patients_smoking$Phenotype=='BRCA2.SA'| Patients_smoking$Phenotype=='NOMUT.SA',]
+brca_smk_brca2.sa<-brca[,rownames(Patients_brca2.sa)]
+
+
+# --- Variable selection ---
+ybrca2.sa<-as.factor(Patients_brca2.sa$Phenotype)
+xbrca2.sa<-Patients_brca2.sa[,c('AGE, EXTRACTION TIME','SMOKING HISTORY')]
+
+
+Total_T_CD4_ciber_brca2.sa<-as.data.frame(Total_T_CD4_ciber[intersect(rownames(Total_T_CD4_ciber),rownames(Patients_brca2.sa)),])
+rownames(Total_T_CD4_ciber_brca2.sa)<-intersect(rownames(Total_T_CD4_ciber),rownames(Patients_brca2.sa))
+colnames(Total_T_CD4_ciber_brca2.sa)<-'Total_T_CD4_ciber'
+
+
+x <- model.matrix(ybrca2.sa~xbrca2.sa$`AGE, EXTRACTION TIME`+ xbrca2.sa$`SMOKING HISTORY`+Total_T_CD4_ciber_brca2.sa$Total_T_CD4_ciber-1)
+x<-x[,-2]
+
+# Fit the model
+lasso_model <- cv.glmnet(x, ybrca2.sa, family = "binomial", standardize=TRUE)
+
+# Select the optimal lambda value based on cross-validation
+optimal_lambda <- lasso_model$lambda.min
+
+coef(lasso_model,s=optimal_lambda)
+
+
+```
+
+In this case, all the variables that were possible to consider are important for the model, as LASSO do not shrink its coefficient to 0.
+
+### - BRCA2.AF VS NOMUT.AF
+
+
+```{r,warning=FALSE}
+# --- Select the patients that have this condition ---
+Patients_brca2.af<-Patients_smoking[Patients_smoking$Phenotype=='BRCA2.AF'| Patients_smoking$Phenotype=='NOMUT.AF',]
+brca_smk_brca2.af<-brca[,rownames(Patients_brca2.af)]
+
+# --- Variable selection ---
+ybrca2.af<-as.factor(Patients_brca2.af$Phenotype)
+xbrca2.af<-Patients_brca2.af[,c('AGE, EXTRACTION TIME','QUIMIO','RADIO','YEARS AFTER QUIMIO','YEARS AFTER RADIO','SMOKING HISTORY')]
+
+
+rownames(Patients_brca2.af)<-gsub('-','.',rownames(Patients_brca2.af))
+
+Total_T_CD4_ciber_brca2.af<-as.data.frame(Total_T_CD4_ciber[intersect(rownames(Total_T_CD4_ciber),rownames(Patients_brca2.af)),])
+rownames(Total_T_CD4_ciber_brca2.af)<-intersect(rownames(Total_T_CD4_ciber),rownames(Patients_brca2.af))
+colnames(Total_T_CD4_ciber_brca2.af)<-'Total_T_CD4_ciber'
+
+x <- model.matrix(ybrca2.af~xbrca2.af$`AGE, EXTRACTION TIME`+xbrca2.af$QUIMIO+xbrca2.af$RADIO+xbrca2.af$`YEARS AFTER QUIMIO`+xbrca2.af$`YEARS AFTER RADIO`+xbrca2.af$`SMOKING HISTORY` +Total_T_CD4_ciber_brca2.af$Total_T_CD4_ciber -1)
+x<-x[,-2]
+
+# Fit the model
+lasso_model <- cv.glmnet(x, ybrca2.af, family = "binomial", standardize=TRUE)
+
+# Select the optimal lambda value based on cross-validation
+optimal_lambda <- lasso_model$lambda.min
+
+coef(lasso_model,s=optimal_lambda)
+
+
+```
+
+Finally, for this comparison, LASSO selects age, quimio, radio, and smoking. 
+
+Again, we should have the same model (same covariates) within the BRCA2 models to compare between them. That is, in the BRCA2 healthy comparison, we will add all the 3 variables LASSO returned, but in BRCA2 affected comparisons, we will also add CIBERSORT, although LASSO do not select it. For the affected samples comparison, we will also add chemotherapy and radiotherapy, although it is exclusively for affected patients, as healthy do not undergo cancer treatments. Despite this fact, we will consider that the models are identical, and we will compare between them.
+
+
+# Differential expression analysis
+
+In this section, we will perform the differential expression analysis with LIMMA, and adding the covariates LASSO returned for each comparison. Those significant differential expressed genes will be those that whose adjusted p-value is less than 0.05, and its absolute logFC value is over 1. 
+
+## BRCA1.SA vs NOMUT.SA
+```{r}
+# --- Select the patients that have this condition ---
+Patients_brca1_sa<-Patients_smoking[Patients_smoking$Phenotype=='BRCA1.SA'| Patients_smoking$Phenotype=='NOMUT.SA',]
+brca_smk_sa1<-brca[,rownames(Patients_brca1_sa)]
+
+#Check the order of the colnames of expression matrix and rownames of phenodata is the same
+identical(colnames(brca_smk_sa1),rownames(Patients_brca1_sa))
+
+age<-Patients_brca1_sa$`AGE, EXTRACTION TIME`
+smok<-Patients_brca1_sa$`SMOKING HISTORY`
+cond<-as.factor(pData(brca_smk_sa1)$Phenotype) #Phenotype
+
+#arrayweights
+arrayw <- arrayWeights(brca_smk_sa1)
+# barplot(arrayw, xlab="Array", ylab="Weight", col="white", las=2)
+# abline(h=1, lwd=1, lty=2)
+
+
+# Design a matrix
+design <- model.matrix(~0+cond+age+smok)
+rownames(design) <- sampleNames(brca_smk_sa1)
+colnames(design) <- gsub("cond", "", colnames(design))
+
+# Fit the model 
+fit <- lmFit(brca_smk_sa1, design,weights = arrayw) 
+
+
+# --- Contrasts ---
+contrast.matrix <- makeContrasts(cond1=BRCA1.SA-NOMUT.SA,
+                                 levels = design)
+
+# --- Fit contrasts and Bayesian adjustment ---
+fit2 <- contrasts.fit(fit, contrast.matrix)
+fite <- eBayes(fit2)
+
+
+# --- Extract results ---
+# BRCA1.SA vs NOMUT.SA
+top.table.brca1.sa <- topTable(fite, coef = 'cond1', number = Inf, adjust = "fdr")
+head(top.table.brca1.sa)
+
+# Number of genes with a p-value < 0.05 
+nrow(top.table.brca1.sa[top.table.brca1.sa$P.Value<0.05,])
+
+# Number of genes with a p-value < 0.1
+nrow(top.table.brca1.sa[top.table.brca1.sa$P.Value<0.1,])
+
+# Number of genes with a p-value < 0.05  and logFC>1
+results.p0.05<-top.table.brca1.sa[top.table.brca1.sa$P.Value<0.05 & abs(top.table.brca1.sa$logFC)>1,]
+
+# Number of genes with a p-value < 0.1 and logFC>1
+nrow(top.table.brca1.sa[top.table.brca1.sa$P.Value<0.1 & abs(top.table.brca1.sa$logFC)>1,])
+
+# Number of genes with a p-value < 0.1 adjusted and logFC>1
+nrow(top.table.brca1.sa[top.table.brca1.sa$adj.P.Val<0.1 & abs(top.table.brca1.sa$logFC)>1,])
+
+#logFC>1
+top.table.brca1.sa[abs(top.table.brca1.sa$logFC)>1,]
+
+# --- Distribution of p-values ---
+hist(top.table.brca1.sa$P.Value, breaks = 100, main = "results P-value BRCA1 Healthy group")
+
+# HEATMAP
+
+library(ComplexHeatmap)
+library(gplots)
+data.clus <- exprs(brca_smk_sa1[rownames(results.p0.05),])
+Patients_brca1_sa$Phenotype<-gsub('SA','HEALTHY',Patients_brca1_sa$Phenotype)
+
+
+#heatmap annotation
+col=list(phenotype=c('BRCA1.HEALTHY'='mediumaquamarine','NOMUT.HEALTHY'='coral'))
+ha<- HeatmapAnnotation(phenotype=Patients_brca1_sa$Phenotype,col=col)
+
+pheatmap(data.clus,scale = 'row',name='Gene expression', row_title = 'Genes',column_title='Heatmap BRCA1 Healthy group',top_annotation=ha)
+
+```
+
+
+##BRCA1.AF vs NOMUT.AF
+```{r}
+# --- Select the patients that have this condition ---
+Patients_brca1_af<-Patients_smoking[Patients_smoking$Phenotype=='BRCA1.AF'| Patients_smoking$Phenotype=='NOMUT.AF',]
+brca_smk_af1<-brca[,rownames(Patients_brca1_af)]
+str(Patients_brca1_af)
+
+#Check the order of the colnames of expression matrix and rownames of phenodata is the same
+identical(colnames(brca_smk_af1),rownames(Patients_brca1_af))
+
+cond<-as.factor(pData(brca_smk_af1)$Phenotype) #Phenotype
+age_brca1_af<- Patients_brca1_af$`AGE, EXTRACTION TIME` # Age
+smoking_brca1_af<-Patients_brca1_af$`SMOKING HISTORY`
+radio1af<-Patients_brca1_af$RADIO
+quimio1af<-Patients_brca1_af$QUIMIO
+yearsquimio1af<-Patients_brca1_af$`YEARS AFTER QUIMIO`
+yearsradio1af<-Patients_brca1_af$`YEARS AFTER RADIO`
+
+#arrayweights
+arraywbrca1.af <- arrayWeights(brca_smk_af1)
+
+# Design a matrix
+design <- model.matrix(~0+cond+smoking_brca1_af+age_brca1_af)
+rownames(design) <- sampleNames(brca_smk_af1)
+colnames(design) <- gsub("cond", "", colnames(design))
+
+# Fit the model 
+fit <- lmFit(brca_smk_af1, design, weights = arraywbrca1.af) 
+
+# --- Contrasts ---
+contrast.matrix2 <- makeContrasts(cond1=BRCA1.AF-NOMUT.AF,
+                                 levels = design)
+
+# --- Fit contrasts and Bayesian adjustment ---
+fit2 <- contrasts.fit(fit, contrast.matrix2)
+fite <- eBayes(fit2)
+
+# --- Extract results ---
+# BRCA1.AF vs NOMUT.AF
+top.table.brca1.af <- topTable(fite, coef = 'cond1', number = Inf, adjust = "fdr")
+head(top.table.brca1.af)
+
+nrow(top.table.brca1.af[top.table.brca1.af$P.Value<0.05,])
+nrow(top.table.brca1.af[top.table.brca1.af$P.Value<0.1,])
+nrow(top.table.brca1.af[top.table.brca1.af$P.Value<0.1 & abs(top.table.brca1.af$logFC)>1,])
+results.p0.05.brca1.af<-top.table.brca1.af[top.table.brca1.af$P.Value<0.05 & abs(top.table.brca1.af$logFC)>1,]
+nrow(top.table.brca1.af[top.table.brca1.af$adj.P.Val<0.1 & abs(top.table.brca1.af$logFC)>1,])
+nrow(top.table.brca1.af[top.table.brca1.af$adj.P.Val<0.05 & abs(top.table.brca1.af$logFC)>1,])
+# --- Distribution of p-values ---
+hist(top.table.brca1.af$P.Value, breaks = 100, main = "results P-value BRCA1 Affected group")
+
+
+#HEATMAP
+data.clus <- exprs(brca_smk_af1[rownames(results.p0.05.brca1.af),])
+Patients_brca1_af$Phenotype<-gsub('AF','AFFECTED',Patients_brca1_af$Phenotype)
+
+
+#heatmap annotation
+col=list(phenotype=c('BRCA1.AFFECTED'='mediumaquamarine','NOMUT.AFFECTED'='coral'))
+ha<- HeatmapAnnotation(phenotype=Patients_brca1_af$Phenotype,col=col)
+
+pheatmap(data.clus,scale = 'row',name='Gene expression', row_title = 'Genes',column_title='Heatmap BRCA1 Affected group',top_annotation=ha)
+
+
+```
+
+## BRCA2.SA vs NOMUT.SA
+
+```{r}
+# --- Select the patients that have this condition ---
+Patients_brca2_sa<-Patients_smoking[Patients_smoking$Phenotype=='BRCA2.SA'| Patients_smoking$Phenotype=='NOMUT.SA',]
+brca_smk_sa2<-brca[,rownames(Patients_brca2_sa)]
+str(Patients_brca2_sa)
+
+#Check the order of the colnames of expression matrix and rownames of phenodata is the same
+identical(colnames(brca_smk_sa2),rownames(Patients_brca2_sa))
+
+cond<-as.factor(pData(brca_smk_sa2)$Phenotype) #Phenotype
+age_brca_sa2<- Patients_brca2_sa$`AGE, EXTRACTION TIME` # Age
+smoking_brca_sa2<-Patients_brca2_sa$`SMOKING HISTORY`
+
+# Prepare the cibersort variable
+rownames(Patients_brca2_sa)<-gsub('-','.',rownames(Patients_brca2_sa))
+commonsamples<-intersect(rownames(Total_T_CD4_ciber),rownames(Patients_brca2_sa))
+cibersort<-Total_T_CD4_ciber[commonsamples,]
+
+
+# Design a matrix
+design <- model.matrix(~0+cond+age_brca_sa2+smoking_brca_sa2+cibersort)
+rownames(design) <- sampleNames(brca_smk_sa2)
+colnames(design) <- gsub("cond", "", colnames(design))
+
+
+#arrayweights
+arraywbrca2.sa <- arrayWeights(brca_smk_sa2)
+
+# Fit the model 
+fit <- lmFit(brca_smk_sa2, design, weights = arraywbrca2.sa) 
+
+# --- Contrasts ---
+contrast.matrix <- makeContrasts(cond1=BRCA2.SA-NOMUT.SA,
+                                 levels = design)
+
+# --- Fit contrasts and Bayesian adjustment ---
+fit2 <- contrasts.fit(fit, contrast.matrix)
+fite <- eBayes(fit2)
+
+# --- Extract results ---
+# BRCA2.SA vs NOMUT.SA
+top.table.brca2.sa <- topTable(fite, coef = 'cond1', number = Inf, adjust = "fdr")
+head(top.table.brca2.sa)
+
+nrow(top.table.brca2.sa[top.table.brca2.sa$P.Value<0.05,])
+nrow(top.table.brca2.sa[top.table.brca2.sa$P.Value<0.1,])
+nrow(top.table.brca2.sa[top.table.brca2.sa$P.Value<0.1 & abs(top.table.brca2.sa$logFC)>1,])
+results.p0.05.brca2.sa<-top.table.brca2.sa[top.table.brca2.sa$P.Value<0.05 & abs(top.table.brca2.sa$logFC)>1,]
+nrow(top.table.brca2.sa[top.table.brca2.sa$adj.P.Val<0.05 & abs(top.table.brca2.sa$logFC)>1,])
+
+# --- Distribution of p-values ---
+hist(top.table.brca2.sa$P.Value, breaks = 100, main = "results P-value BRCA2 Healthy group")
+
+
+#HEATMAP
+data.clus <- exprs(brca_smk_sa2[rownames(results.p0.05.brca2.sa),])
+Patients_brca2_sa$Phenotype<-gsub('SA','HEALTHY',Patients_brca2_sa$Phenotype)
+
+
+#heatmap annotation
+col=list(phenotype=c('BRCA2.HEALTHY'='mediumaquamarine','NOMUT.HEALTHY'='coral'))
+ha<- HeatmapAnnotation(phenotype=Patients_brca2_sa$Phenotype,col=col)
+
+pheatmap(data.clus,scale = 'row',name='Gene expression', row_title = 'Genes',column_title='Heatmap BRCA2 Healthy group',top_annotation=ha)
+
+```
+
+In this comparison, there is one gene that is significantly differentially expressed between BRCA2 healthy and NOMUT healthy, LOC100653061, as the adjusted p-value is less than 0.05, and the absolute value of LogFC is over 1. 
+
+## BRCA2.AF vs NOMUT.AF
+
+```{r}
+# --- Select the patients that have this condition ---
+Patients_brca2.af<-Patients_smoking[Patients_smoking$Phenotype=='BRCA2.AF'| Patients_smoking$Phenotype=='NOMUT.AF',]
+brca_smk_brca2.af<-brca[,rownames(Patients_brca2.af)]
+
+# Create a vector of conditions 
+cond<-as.factor(pData(brca_smk_brca2.af)$Phenotype) #Phenotype
+age_brca2.af<- Patients_brca2.af$`AGE, EXTRACTION TIME` # Age
+smoking_brca2.af<-Patients_brca2.af$`SMOKING HISTORY`
+radio_brca2.af<-Patients_brca2.af$RADIO
+quimio_brca2.af<-Patients_brca2.af$QUIMIO
+
+table(radio_brca2.af)
+yearsquimio<-Patients_brca2.af$`YEARS AFTER QUIMIO`
+yearsradio<- Patients_brca2.af$`YEARS AFTER RADIO`
+
+rownames(Patients_brca2.af)<-gsub('-','.',rownames(Patients_brca2.af))
+commonsamples<-intersect(rownames(Total_T_CD4_ciber),rownames(Patients_brca2.af))
+cibersort<-Total_T_CD4_ciber[commonsamples,]
+
+#arrayweights
+arraywbrca2.af <- arrayWeights(brca_smk_brca2.af)
+
+# Design a matrix
+design <- model.matrix(~0+cond+smoking_brca2.af+quimio_brca2.af+age_brca2.af+cibersort)
+rownames(design) <- sampleNames(brca_smk_brca2.af)
+colnames(design) <- gsub("cond", "", colnames(design))
+
+# Fit the model 
+fit <- lmFit(brca_smk_brca2.af, design, weights = arraywbrca2.af) 
+
+# --- Contrasts ---
+contrast.matrix <- makeContrasts(cond1=BRCA2.AF-NOMUT.AF,levels = design)
+
+# --- Fit contrasts and Bayesian adjustment ---
+fit2 <- contrasts.fit(fit, contrast.matrix)
+fite <- eBayes(fit2)
+
+# --- Extract results ---
+# BRCA2.AF vs NOMUT.AF
+top.table.brca2.AF <- topTable(fite, coef = 'cond1', number = Inf, adjust = "fdr")
+head(top.table.brca2.AF)
+
+nrow(top.table.brca2.AF[top.table.brca2.AF$P.Value<0.1,])
+nrow(top.table.brca2.AF[top.table.brca2.AF$P.Value<0.05,])
+nrow(top.table.brca2.AF[top.table.brca2.AF$P.Value<0.1 & abs(top.table.brca2.AF$logFC)>1,])
+results.p0.05.brca2.af<-top.table.brca2.AF[top.table.brca2.AF$P.Value<0.05 & abs(top.table.brca2.AF$logFC)>1,]
+nrow(top.table.brca2.AF[top.table.brca2.AF$adj.P.Val<0.1 & abs(top.table.brca2.AF$logFC)>1,])
+
+# --- Distribution of p-values ---
+hist(top.table.brca2.AF$P.Value, breaks = 100, main = "results P-value BRCA2 Affected group")
+
+#HEATMAP
+data.clus <- exprs(brca_smk_brca2.af[rownames(results.p0.05.brca2.af),])
+Patients_brca2.af$Phenotype<-gsub('AF','AFFECTED',Patients_brca2.af$Phenotype)
+
+
+#heatmap annotation
+col=list(phenotype=c('BRCA2.AFFECTED'='mediumaquamarine','NOMUT.AFFECTED'='coral'))
+ha<- HeatmapAnnotation(phenotype=Patients_brca2.af$Phenotype,col=col)
+
+pheatmap(data.clus,scale = 'row',name='Gene expression', row_title = 'Genes',column_title='Heatmap BRCA2 Affected group',top_annotation=ha)
+
+```
+
+
+
+
+## Rank gene list
+
+For the next step, the Gene Set Enrichment Analysis, we need a list with the whole genes of genes ordered. In this case, we will use the combination of the sign of the logFC and the log10 of the P.value to create a metric to rank all the genes. 
+
+```{r}
+# --- BRCA1.SA vs NOMUT.SA ----
+sign=sign(top.table.brca1.sa$logFC)
+logP=-log10(top.table.brca1.sa$P.Value)
+metric=logP*sign
+geneList = metric
+names(geneList) = rownames(top.table.brca1.sa)
+geneList_brca1.sa = sort(geneList, decreasing = TRUE)
+
+gene_names_list_brca1.sa <- names(geneList_brca1.sa)
+
+# --- BRCA1.AF vs NOMUT.AF ----
+signbrca1af=sign(top.table.brca1.af$logFC)
+logPbrca1af=-log10(top.table.brca1.af$P.Value)
+metricbrca1.af=logPbrca1af*signbrca1af
+geneList_brca1_af = metricbrca1.af
+names(geneList_brca1_af) = rownames(top.table.brca1.af)
+geneList_brca1_af = sort(geneList_brca1_af, decreasing = TRUE)
+
+gene_names_list_brca1.af <- names(geneList_brca1_af)
+
+# --- BRCA2.SA vs NOMUT.SA ---
+signbrca2=sign(top.table.brca2.sa$logFC)
+logP_brca2=-log10(top.table.brca2.sa$P.Value)
+metricbrca2=logP_brca2*signbrca2
+geneList_brca2_sa = metricbrca2
+names(geneList_brca2_sa) = rownames(top.table.brca2.sa)
+geneList_brca2_sa = sort(geneList_brca2_sa, decreasing = TRUE)
+
+
+gene_names_list_brca2.sa <- names(geneList_brca2_sa)
+
+# --- BRCA2.AF vs NOMUT.AF ---
+signbrca2af=sign(top.table.brca2.AF$logFC)
+logP_brca2af=-log10(top.table.brca2.AF$P.Value)
+metricbrca2af=logP_brca2af*signbrca2af
+geneList_brca2_af = metricbrca2af
+names(geneList_brca2_af) = rownames(top.table.brca2.AF)
+geneList_brca2_af = sort(geneList_brca2_af, decreasing = TRUE)
+
+gene_names_list_brca2.af <-  names(geneList_brca2_af)
+```
+
+
+# Functional analysis
+
+The steps to perform gene set enrichment analysis comparing different conditions are described next. 
+
+- First, data has to be normalized and preprocessed, which is done and explained in the previous steps.
+
+- Define curated gene sets or pathways. There are gene set databases like MSigDB (Molecular Signatures Database) or Reactome, that provide pre-defined gene sets representing various biological processes and pathways. 
+
+- Perform differential gene expression analysis comparing the different conditions. The aim of this step is to obtain a complete list of genes (ALL genes) ranked by an statistical parameter. In this case, to rank the genes of the sample data results, we will combine the sign of the logFC and the p-value.
+
+- Conduct GSEA analysis. clusterProfiler R package enables to perform GSEA analysis. 
+
+We will use MSigDB to get the gene set collections. Within this database, we can access to Hallmark or to curated gene sets, which include canonical pathways gene sets derived from the Reactome database. The GSEA is perform using the Hallmark gene set collection and the Reactome. Results are finally compared. 
+
+## GSEA - mSigDB -Hallmark
+
+We will use data from the hallmark gene set collection. Hallmark gene sets are coherently expressed signatures derived by aggregating many MSigDB gene sets to represent well-defined biological states or processes. In this collection, there are 50 gene sets.
+
+
+```{r,warning=FALSE}
+library(enrichplot)
+library(msigdbr)
+
+
+h_gene_sets = msigdbr(species = "Homo sapiens", category = "H")
+H.entrez <- h_gene_sets %>% dplyr::select(gs_name, entrez_gene)
+H.symbol <- h_gene_sets %>% dplyr::select(gs_name, gene_symbol)
+
+```
+
+
+
+### BRCA1.SA vs NOMUT.SA
+```{r,warning=FALSE,message=FALSE}
+library(ggplot2)
+library(clusterProfiler)
+set.seed(123)
+resGsea <- GSEA(geneList_brca1.sa, TERM2GENE = H.symbol)
+head(resGsea)
+
+#plots
+resGseaR<-resGsea@result[resGsea@result$p.adjust<0.05,]
+resGseaR$ID<-gsub('HALLMARK_','',resGseaR$ID)
+# Barplot
+barplot=ggplot(resGseaR, aes(x=ID, y=NES,fill=p.adjust)) + 
+  geom_bar(stat = "identity") +
+  scale_fill_continuous(low='red', high='blue')+
+  coord_flip() +
+  theme_bw()+ggtitle('BRCA1 Healthy')
+
+barplot
+```
+
+The gene sets with a positive NES value, indicate that there is an enrichment at the top of the ranked gene list. On the other hand, for those gene sets whose NES value is negative, that means they are enriched at the bottom of the ranked gene list. 
+
+Most of the positive gene sets are related with cell proliferation pathways.
+```{r}
+
+#### Leading edge analysis ####
+resGsea[,c(10,11)]
+
+```
+
+For each pathway, the leading_edge column returns as Tags, the percentage of genes contributing to the enrichment score; List, to indicate were in the list the enrichment score is attained; and signal, to indicate the strength of the enrichment. 
+
+The core enrichment genes are those that contribute the most to the enrichment of each pathway. 
+
+
+
+```{r,fig.keep='none'}
+#### Network plot for enriched terms ####
+cnetplot(resGsea,foldChange=geneList_brca1.sa)
+```
+
+![](C:/Users/MARINA/Pictures/Screenshots/cnetplot1.png)
+
+```{r,fig.keep='none'}
+#Select top genes
+core.genes <- str_split(as.data.frame(resGsea)[,"core_enrichment"] , "/")
+my.selected.genes <- names( geneList_brca1.sa[abs(geneList_brca1.sa) > 1.5] )  
+
+
+filtered.core.genes <- sapply(lapply(core.genes, function(x) x[x %in% my.selected.genes]),                        paste, collapse="/")
+resGsea@result$core_enrichment <- filtered.core.genes
+resGsea[,c(10,11)]
+cnetplot(resGsea,
+         showCategory=5,
+          circular = FALSE,colorEdge=TRUE
+          )
+
+```
+
+
+![](C:/Users/MARINA/Pictures/Screenshots/cnetplotbrca1safilt.png)
+
+List of negative gene sets: 
+```{r}
+# --- Negative NES Pathways ---
+negative_pathways_brca1_sa<-resGseaR[resGseaR$NES<0,]$ID
+negative_pathways_brca1_sa
+```
+
+List of positive gene sets:
+```{r}
+# --- Positive NES Pathways ---
+positive_pathways_brca1_sa<-resGseaR[resGseaR$NES>0,]$ID
+positive_pathways_brca1_sa
+```
+
+
+### BRCA1.AF vs NOMUT.AF
+
+```{r,warning=FALSE}
+set.seed(123)
+resGsea.brca1.af <- GSEA(geneList_brca1_af, TERM2GENE = H.symbol)
+head(resGsea.brca1.af)
+
+#plots
+resGseaR.brca1.af<-resGsea.brca1.af@result[resGsea.brca1.af@result$p.adjust<0.05,]
+resGseaR.brca1.af$ID<-gsub('HALLMARK_','',resGseaR.brca1.af$ID)
+
+p=ggplot(resGseaR.brca1.af, aes(x=ID, y=NES,fill=p.adjust)) + 
+  geom_bar(stat = "identity") +
+  scale_fill_continuous(low='red', high='blue')+
+  coord_flip() +
+  theme_bw()+ggtitle('BRCA1 Affected')
+
+p
+
+heatplot(resGsea.brca1.af)
+```
+
+```{r}
+
+#### Leading edge analysis ####
+resGsea.brca1.af[,c(10,11)]
+
+```
+
+```{r,fig.keep='none'}
+#### Network plot for enriched terms ####
+cnetplot(resGsea.brca1.af,foldChange=geneList_brca1_af)
+```
+
+![](C:/Users/MARINA/Pictures/Screenshots/cnetplot2.png)
+
+```{r}
+# --- Negative NES Pathways ---
+negative_pathways_brca1_af<-resGsea.brca1.af[resGsea.brca1.af$NES<0,]$ID
+negative_pathways_brca1_af
+```
+
+```{r}
+# --- Positive NES Pathways ---
+positive_pathways_brca1_af<-resGsea.brca1.af[resGsea.brca1.af$NES>0,]$ID
+positive_pathways_brca1_af
+
+```
+
+### BRCA2.SA vs NOMUT.SA
+```{r,warning=FALSE}
+set.seed(123)
+resGsea_brca2.sa <- GSEA(geneList_brca2_sa, TERM2GENE = H.symbol)
+head(resGsea_brca2.sa)
+
+resGseaR_brca2.sa<-resGsea_brca2.sa@result[resGsea_brca2.sa@result$p.adjust<0.05,]
+resGseaR_brca2.sa$ID<-gsub('HALLMARK_','',resGseaR_brca2.sa$ID)
+
+p2=ggplot(resGseaR_brca2.sa, aes(x=ID, y=NES,fill=p.adjust)) + 
+  geom_bar(stat = "identity") +
+  scale_fill_continuous(low='red', high='blue')+
+  coord_flip() +
+  theme_bw()+ggtitle('BRCA2 Healthy')
+
+p2
+
+```
+
+
+```{r}
+
+#### Leading edge analysis ####
+resGsea_brca2.sa[,c(10,11)]
+
+```
+
+```{r,fig.keep='none'}
+#### Network plot for enriched terms ####
+cnetplot(resGsea_brca2.sa,foldChange=geneList_brca2_sa)
+```
+
+
+![](C:/Users/MARINA/Pictures/Screenshots/cnetplot3.png)
+
+
+
+
+```{r}
+# --- Negative NES Pathways ---
+negative_pathways_brca2_sa<-resGseaR_brca2.sa[resGseaR_brca2.sa$NES<0,]$ID
+negative_pathways_brca2_sa
+```
+
+```{r}
+# --- Positive NES Pathways ---
+positive_pathways_brca2_sa<-resGseaR_brca2.sa[resGseaR_brca2.sa$NES>0,]$ID
+positive_pathways_brca2_sa
+```
+
+
+
+### BRCA2.AF vs NOMUT.AF
+
+```{r,warning=FALSE}
+set.seed(123)
+resGsea.brca2.af <- GSEA(geneList_brca2_af, TERM2GENE = H.symbol)
+head(resGsea.brca2.af)
+
+#plots
+resGseaR.brca2.af<-resGsea.brca2.af@result[resGsea.brca2.af@result$p.adjust<0.05,]
+resGseaR.brca2.af$ID<-gsub('HALLMARK_','',resGseaR.brca2.af$ID)
+
+p3=ggplot(resGseaR.brca2.af, aes(x=ID, y=NES,fill=p.adjust)) + 
+  geom_bar(stat = "identity") +
+  scale_fill_continuous(low='red', high='blue')+
+  coord_flip() +
+  theme_bw()+ggtitle('BRCA2 Affected')
+
+p3
+
+```
+
+
+
+```{r}
+
+#### Leading edge analysis ####
+resGsea.brca2.af[,c(10,11)]
+
+```
+
+```{r,fig.keep='none'}
+#### Network plot for enriched terms ####
+cnetplot(resGsea.brca2.af,foldChange=geneList_brca2_af)
+```
+
+
+![](C:/Users/MARINA/Pictures/Screenshots/cnetplot4.png)
+
+
+
+```{r}
+# --- Negative NES Pathways ---
+negative_pathways_brca2_af<-resGseaR.brca2.af[resGseaR.brca2.af$NES<0,]$ID
+negative_pathways_brca2_af
+```
+
+```{r}
+# --- Positive NES Pathways ---
+positive_pathways_brca2_af<-resGseaR.brca2.af[resGseaR.brca2.af$NES>0,]$ID
+```
+
+```{r}
+figure<-ggarrange(barplot,p,p2,p3, labels = c('A','B','C','D'), ncol=2,nrow=2)
+annotate_figure(figure,top = text_grob("GSEA Pathways"))
+
+
+```
+
+
+
+
+### Comparisons
+#### BRCA1.SA vs BRCA1.AF
+
+It is interesting to study the comparison between BRCA1 of healthy and affected samples. 
+
+Let's retrieve a list of positive pathways shared between BRCA1 healthy and BRCA1 affected:
+
+```{r,message=FALSE}
+library(VennDiagram)
+intersect(positive_pathways_brca1_sa,positive_pathways_brca1_af)
+venn.diagram(
+  x = list(positive_pathways_brca1_sa, positive_pathways_brca1_af),
+  category.names = c("BRCA1.HEALTHY", "BRCA1.AFFECTED"),
+  filename = 'hall_positive_venn_diagramm_brca1_vs_brca1_50filt.png',
+  output = TRUE,
+  main = 'Positive BRCA1 Healthy vs Positive BRCA1 Affected',
+  col = "transparent",
+  fill = c('forestgreen', 'coral'),
+  print.mode=c("raw","percent"),cat.pos = c(-27, 160),cat.dist= c(0.02,-0.05))
+```
+![](C:/Users/MARINA/Documents/MASTER/TFM/Pictures/hallmark_brca1healthy_brca1_aff_positive.jpg)
+
+Negative pathways shaded between BRCA1 healthy and BRCA1 affected:
+```{r}
+intersect(negative_pathways_brca1_sa,negative_pathways_brca1_af)
+venn.diagram(
+  x = list(negative_pathways_brca1_sa, negative_pathways_brca1_af),
+  category.names = c("BRCA1.HEALTHY", "BRCA1.AFFECTED"),
+  filename = 'hall_negative_venn_diagramm_brca1_vs_brca1_50filt.png',
+  output = TRUE,
+  main = 'Negative BRCA1 Healthy vs Negative BRCA1 Affected',
+  col = "transparent",
+  fill = c('forestgreen', 'coral'),
+  print.mode=c("raw","percent"),cat.pos = c(-27, 160),cat.dist= c(0.02,-0.05))
+```
+![](C:/Users/MARINA/Documents/MASTER/TFM/Pictures/hallmark_brca1healthy_brca1_aff_negative.jpg)
+
+
+Positive BRCA1 healthy pathways that are negative in BRCA1 affected
+```{r}
+intersect(positive_pathways_brca1_sa,negative_pathways_brca1_af)
+venn.diagram(
+  x = list(positive_pathways_brca1_sa, negative_pathways_brca1_af),
+  category.names = c("BRCA1.HEALTHY", "BRCA1.AFECTED"),
+  filename = 'hall_pos_neg_venn_diagramm_brca1sa_vs_brca1af_50filt.png',
+  output = TRUE,
+  main = 'Venn diagram BRCA1 Healthy vs BRCA1 Afected',
+  col = "transparent",
+  fill = c('forestgreen', 'coral'),
+  print.mode=c("raw","percent"))
+```
+There are no pathways shared between positive BRCA1 healthy and negative BRCA1 affected.
+
+
+
+Negative BRCA1 healthy pathways that are positive in BRCA1 affected
+```{r}
+intersect(negative_pathways_brca1_sa,positive_pathways_brca2_af)
+venn.diagram(
+  x = list(negative_pathways_brca1_sa, positive_pathways_brca2_af),
+  category.names = c("BRCA1.HEALTHY", "BRCA1.AFFECTED"),
+  filename = 'msigdb_neg_pos_venn_diagramm_brca1sa_vs_brca1af_50filt.png',
+  output = TRUE,
+  main = 'Venn diagram BRCA1 Healthy vs BRCA1 Affected',
+  col = "transparent",
+  fill = c('forestgreen', 'coral'),
+  print.mode=c("raw","percent"))
+```
+There are no pathways shared between negative BRCA1 healthy and positive BRCA1 affected. 
+
+
+#### BRCA2.SA vs BRCA2.AF
+
+And finally, for the hallmark gene set collection, we will study the comparisons between BRCA2 healthy and BRCA2 affected samples. 
+
+Positive pathways shared between BRCA2 healthy and BRCA2 affected:
+```{r}
+intersect(positive_pathways_brca2_sa,positive_pathways_brca2_af)
+venn.diagram(
+  x = list(positive_pathways_brca2_sa, positive_pathways_brca2_af),
+  category.names = c("BRCA2.HEALTHY", "BRCA2.AFFECTED"),
+  filename = 'hallmark_positive_venn_diagramm_brca2_vs_brca2_50filt.png',
+  output = TRUE,
+  main = 'Venn diagram BRCA2 Healthy vs BRCA2 Affected',
+  col = "transparent",
+  fill = c('forestgreen', 'coral'),
+  print.mode=c("raw","percent"))
+```
+ No positive pathways shared between BRCA2 healthy and affected.
+ 
+ 
+Negative pathways shaded between brca2 healthy and brca2 afected:
+```{r}
+intersect(negative_pathways_brca2_sa,negative_pathways_brca2_af)
+venn.diagram(
+  x = list(negative_pathways_brca2_sa, negative_pathways_brca2_af),
+  category.names = c("BRCA2.HEALTHY", "BRCA2.AFFECTED"),
+  filename = 'hallmark_negative_venn_diagramm_brca2_vs_brca2_50filt.png',
+  output = TRUE,
+  main = 'Venn diagram negative BRCA2 Healthy vs BRCA2 Affected',
+  col = "transparent",
+  fill = c('forestgreen', 'coral'),
+  print.mode=c("raw","percent"),cat.pos = c(-27, 160),cat.dist= c(0.02,-0.05))
+```
+![](C:/Users/MARINA/Documents/MASTER/TFM/Pictures/hallmark_negative_brca2.jpg)
+
+Positive BRCA2 healthy pathways that are negative in BRCA2 affected:
+```{r}
+intersect(positive_pathways_brca2_sa,negative_pathways_brca2_af)
+
+venn.diagram(
+  x = list(positive_pathways_brca2_sa, negative_pathways_brca2_af),
+  category.names = c("BRCA2.HEALTHY", "BRCA2.AFFECTED"),
+  filename = 'hallmark_pos_neg_venn_diagramm_brca2_vs_brca2_50filt.png',
+  output = TRUE,
+  main = 'Positive BRCA2 Healthy vs Negative BRCA2 Affected',
+  col = "transparent",
+  fill = c('forestgreen', 'coral'),
+  print.mode=c("raw","percent"),cat.pos = c(-27, 160),cat.dist= c(0.02,-0.05))
+```
+No pathways shared between positive BRCA2 healthy and negative in BRCA2 affected.
+
+
+Negative BRCA2 healthy pathways that are positive in BRCA2 affected:
+```{r}
+intersect(negative_pathways_brca2_sa,positive_pathways_brca2_af)
+venn.diagram(
+  x = list(negative_pathways_brca2_sa, positive_pathways_brca2_af),
+  category.names = c("BRCA2.HEALTHY", "BRCA2.AFFECTED"),
+  filename = 'hallmark_neg_pos_venn_diagramm_brca2sa_vs_brca2af_50filt.png',
+  output = TRUE,
+  main = 'Venn diagram BRCA2 Healthy vs BRCA2 Affected',
+  col = "transparent",
+  fill = c('forestgreen', 'coral'),
+  print.mode=c("raw","percent"))
+```
+No negative pathways of BRCA2 healthy shared with the positive pathways of BRA2 affected.
+
+## Leading edge analysis
+
+The leading edge analysis allows for the GSEA to determine which subsets of genes contributed the most to the enrichment signal of a given gene set's leading edge or core enrichment.
+
+
+
+
+```{r}
+leading_edge()
+
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+# #######################################################################################
+## GSEA - mSigDB - Reactome
+
+This helper function shows the available collections.
+```{r}
+msigdbr_collections()
+```
+
+
+We will select the Reactome subset of canonical patwhays within the C2 collection. There are 1654 gene sets, so we expect to see a higher number of gene sets in our analysis compared with the hallamrk. 
+
+```{r}
+library(msigdbr)
+
+reactome_gene_sets = msigdbr(species = "Homo sapiens", category = "C2", subcategory = 'CP:REACTOME')
+R.entrez <- reactome_gene_sets %>% dplyr::select(gs_name, entrez_gene)
+R.symbol <- reactome_gene_sets %>% dplyr::select(gs_name, gene_symbol)
+```
+
+### BRCA1.SA VS NOMUT.SA
+
+```{r,warning=FALSE}
+
+set.seed(123)
+react.brca1.sa<- GSEA(geneList_brca1.sa, TERM2GENE = R.symbol)
+react.brca1.sa<-react.brca1.sa@result[react.brca1.sa@result$p.adjust<0.05,]
+head(react.brca1.sa)
+
+#positive NES
+positive_NES_reactome_brca1.sa<-react.brca1.sa[react.brca1.sa$NES>0,]$ID
+length(positive_NES_reactome_brca1.sa)
+
+#negative NES
+negative_NES_reactome_brca1.sa<-react.brca1.sa[react.brca1.sa$NES<0,]$ID
+length(negative_NES_reactome_brca1.sa)
+
+```
+
+### BRCA1.AF vs NOMUT.AF
+
+```{r,warning=FALSE}
+set.seed(123)
+react.brca1.af <- GSEA(geneList_brca1_af, TERM2GENE = R.symbol)
+react.brca1.af<-react.brca1.af@result[react.brca1.af@result$p.adjust<0.05,]
+head(react.brca1.af)
+
+#positive
+positive_NES_reactome_brca1.af<-react.brca1.af[react.brca1.af$NES>0,]$ID
+length(positive_NES_reactome_brca1.af)
+
+#negative NES
+negative_NES_reactome_brca1.af<-react.brca1.af[react.brca1.af$NES<0,]$ID
+length(negative_NES_reactome_brca1.af)
+
+
+```
+
+
+### BRCA2.SA VS NOMUT.SA
+```{r,warning=FALSE}
+set.seed(123)
+react.brca2.sa <- GSEA(geneList_brca2_sa, TERM2GENE = R.symbol)
+react.brca2.sa<-react.brca2.sa@result[react.brca2.sa@result$p.adjust<0.05,]
+head(react.brca2.sa)
+
+#positive NES
+positive_NES_reactome_brca2.sa<-react.brca2.sa[react.brca2.sa$NES>0,]$ID
+length(positive_NES_reactome_brca2.sa)
+
+#negative NES
+negative_NES_reactome_brca2.sa<-react.brca2.sa[react.brca2.sa$NES<0,]$ID
+length(negative_NES_reactome_brca2.sa)
+
+```
+
+
+### BRCA2.AF vs NOMUT.AF
+
+```{r}
+set.seed(123)
+react.brca2.af <- GSEA(geneList_brca2_af, TERM2GENE = R.symbol)
+react.brca2.af<-react.brca2.af@result[react.brca2.af@result$p.adjust<0.05,]
+head(react.brca2.af)
+
+
+#positive
+positive_NES_reactome_brca2.af<-react.brca2.af[react.brca2.af$NES>0,]$ID
+length(positive_NES_reactome_brca2.af)
+
+#negative NES
+negative_NES_reactome_brca2.af<-react.brca2.af[react.brca2.af$NES<0,]$ID
+length(negative_NES_reactome_brca2.af)
+
+```
+### Comparisons
+#### BRCA1.SA vs BRCA1.AF
+
+Positive pathways shared between BRCA1 healthy and BRCA1 affected:
+
+```{r}
+
+intersect(positive_NES_reactome_brca1.sa,positive_NES_reactome_brca1.af)
+venn.diagram(
+  x = list(positive_NES_reactome_brca1.sa, positive_NES_reactome_brca1.af),
+  category.names = c("BRCA1.HEALTHY", "BRCA1.AFFECTED"),
+  filename = 'reactome_positive_venn_diagramm_brca1_vs_brca1_50filt.png',
+  output = TRUE,
+  main = 'Positive BRCA1 Healthy vs Positive BRCA1 Affected',
+  col = "transparent",
+  fill = c('forestgreen', 'coral'),
+  print.mode=c("raw","percent"),
+   cat.pos = c(-27, 165))
+```
+
+![](C:/Users/MARINA/Documents/MASTER/TFM/Pictures/reactome_positive_brca1_brca2.jpg)
+The only positive pathway that is found in BRCA1 affected, is found in BRCA1 healthy. 
+
+
+
+Negative pathways shared between BRCA1 healthy and BRCA1 affected:
+```{r}
+
+intersect(negative_NES_reactome_brca1.sa,negative_NES_reactome_brca1.af)
+
+venn.diagram(
+  x = list(negative_NES_reactome_brca1.sa, negative_NES_reactome_brca1.af),
+  category.names = c("BRCA1.HEALTHY", "BRCA1.AFFECTED"),
+  filename = 'reactome_negative_venn_diagramm_brca1_vs_brca1_50filt.png',
+  output = TRUE,
+  main = 'Negative BRCA1 Healthy vs Negative BRCA1 Affected',
+  col = "transparent",
+  fill = c('forestgreen', 'coral'),
+  print.mode=c("raw","percent"),cat.pos = c(-27, 160))
+
+```
+![](C:/Users/MARINA/Documents/MASTER/TFM/Pictures/reactome_negative_BRCA1.jpg)
+
+The 2 pathways found in BRCA1 affected are shared with BRCA1 healthy pathways. 
+
+
+Positive BCRA1 healthy pathways that are negative in BCRA1 affected:
+```{r}
+intersect(positive_NES_reactome_brca1.sa,negative_NES_reactome_brca1.af)
+venn.diagram(
+  x = list(positive_NES_reactome_brca1.sa, negative_NES_reactome_brca1.af),
+  category.names = c("BRCA1.HEALTHY", "BRCA1.AF"),
+  filename = 'reactome_pos_neg_venn_diagramm_brca1sa_vs_brca1af_50filt.png',
+  output = TRUE,
+  main = 'Venn diagram BRCA1 Healthy vs BRCA1 Affected',
+  col = "transparent",
+  fill = c('forestgreen', 'coral'),
+  print.mode=c("raw","percent"))
+```
+
+There are no positive BRCA1 healthy pathways that are shared with the negative BRCA1 affected pathways.
+
+Negative BCRA1 healthy pathways that are positive in BCRA1 affected:
+```{r}
+intersect(negative_NES_reactome_brca1.sa,positive_NES_reactome_brca1.af)
+venn.diagram(
+  x = list(negative_NES_reactome_brca1.sa, positive_NES_reactome_brca1.af),
+  category.names = c("BRCA1.HEALTHY", "BRCA1.AFFECTED"),
+  filename = 'reactome_neg_pos_venn_diagramm_brca1sa_vs_brca1af_50filt.png',
+  output = TRUE,
+  main = 'Venn diagram BRCA1 Healthy vs BRCA1 Affected',
+  col = "transparent",
+  fill = c('forestgreen', 'coral'),
+  print.mode=c("raw","percent"))
+```
+
+There are no negative BRCA1 healthy pathways shared with the positive of BRCA1 affected.
+
+
+#### BRCA2.SA vs BRCA2.AF
+
+Positive pathways shared between BRCA2 healthy and BRCA2 affected:
+```{r}
+intersect(positive_NES_reactome_brca2.sa,positive_NES_reactome_brca2.af)
+venn.diagram(
+  x = list(positive_NES_reactome_brca2.sa, positive_NES_reactome_brca2.af),
+  category.names = c("BRCA2.HEALTHY", "BRCA2.AFFECTED"),
+  filename = 'reactome_positive_venn_diagramm_brca2_vs_brca2_50filt.png',
+  output = TRUE,
+  main = 'Venn diagram BRCA2 Healthy vs BRCA2 Affected',
+  col = "transparent",
+  fill = c('forestgreen', 'coral'),
+  print.mode=c("raw","percent"),cat.pos = c(-27,100),cat.dist= c(0.02,-0.05))
+```
+
+![](C:/Users/MARINA/Documents/MASTER/TFM/Pictures/reactome_positive_brca2.jpg)
+
+
+Negative pathways shared between BRCA2 healthy and BRCA2 affected:
+```{r}
+intersect(negative_NES_reactome_brca2.sa,negative_NES_reactome_brca2.af)
+venn.diagram(
+  x = list(negative_NES_reactome_brca2.sa, negative_NES_reactome_brca2.af),
+  category.names = c("BRCA2.HEALTHY", "BRCA2.AFFECTED"),
+  filename = 'reactome_negative_venn_diagramm_brca2_vs_brca2_50filt.png',
+  output = TRUE,
+  main = 'Venn diagram BRCA2 Healthy vs BRCA2 Affected',
+  col = "transparent",
+  fill = c('forestgreen', 'coral'),
+  print.mode=c("raw","percent"),cat.pos = c(-27,160),cat.dist= c(0.02,-0.05))
+```
+![](C:/Users/MARINA/Documents/MASTER/TFM/Pictures/reactome_negative_BRCA2.jpg)
+
+
+Positive BRCA2 healthy pathways that are negative in BRCA2 affected:
+```{r}
+intersect(positive_NES_reactome_brca2.sa,negative_NES_reactome_brca2.af)
+
+venn.diagram(
+  x = list(positive_NES_reactome_brca2.sa, negative_NES_reactome_brca2.af),
+  category.names = c("BRCA2.HEALTHY", "BRCA2.AFFECTED"),
+  filename = 'reactome_pos_neg_venn_diagramm_brca2_vs_brca2_50filt.png',
+  output = TRUE,
+  main = 'Positive BRCA2 Healthy vs Negative BRCA2 Affected',
+  col = "transparent",
+  fill = c('forestgreen', 'coral'),
+  print.mode=c("raw","percent"),cat.pos=c(30,-30),cat.dist=c(0,0))
+```
+
+Negative BRCA2 healthy pathways that are positive in BRCA2 affected:
+```{r}
+intersect(negative_NES_reactome_brca2.sa,positive_NES_reactome_brca2.af)
+venn.diagram(
+  x = list(negative_NES_reactome_brca2.sa, positive_NES_reactome_brca2.af),
+  category.names = c("BRCA2.HEALTHY", "BRCA2.AFFECTED"),
+  filename = 'reactome_neg_pos_venn_diagramm_brca2sa_vs_brca2af_50filt.png',
+  output = TRUE,
+  main = 'Negative BRCA2 Healthy vs Positive BRCA2 Affected',
+  col = "transparent",
+  fill = c('forestgreen', 'coral'),
+  print.mode=c("raw","percent"),cat.pos = c(-27, 170))
+```
+

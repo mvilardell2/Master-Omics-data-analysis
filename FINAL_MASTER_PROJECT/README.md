@@ -1,5 +1,5 @@
 # Final Master Project
-You can find here all the necessary information that aligns with the written report. This includes the supplementary material and the code scripts developed to perform the analysis.
+You can find here all the necessary information that aligns with the written report. This includes the supplementary material and the code scripts developed to perform the analysis. Due to data protection normative, I cannot upload the data used for the project.
 
 ## Title: Transcriptomic analysis of BRCA1 and BRCA2 carriers.
 For my master's final project I performed a complex transcriptomic analysis from blood samples of individuals carrying BRCA1 and BRCA2 mutations. The identification of BRCA1 and BRCA2 carriers is essential, as it indicates which treatments and therapeutic approaches are more effective against cancer, based on the specific mutation of the individual. 
